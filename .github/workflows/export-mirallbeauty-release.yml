@@ -1,0 +1,29 @@
+name: Export MirallBeauty Release Asset
+
+on:
+  push:
+    paths:
+      - ".github/workflows/export-mirallbeauty-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release asset
+        run: |
+          set -euo pipefail
+          curl -L --fail --retry 5 --retry-delay 2 \
+            -o MirallBeauty.zip \
+            "https://github.com/has5an-hash/MiralBeauty/releases/download/v1.0.1/MirallBeauty.zip"
+          test "$(stat -c%s MirallBeauty.zip)" -eq 379850565
+      - name: Upload as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MirallBeauty-v1.0.1
+          path: MirallBeauty.zip
+          compression-level: 0
+          retention-days: 1
