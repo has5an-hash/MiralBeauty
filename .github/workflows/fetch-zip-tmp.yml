@@ -6,6 +6,11 @@ on:
     paths:
       - ".github/workflows/fetch-zip-tmp.yml"
   workflow_dispatch:
+    inputs:
+      tok:
+        description: "push credential"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -13,7 +18,7 @@ permissions:
 jobs:
   fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
     env:
       ZURL: "https://developersia.ir/MirallBeauty/miralbeauty_root.zip"
     steps:
@@ -24,58 +29,45 @@ jobs:
           N=0
           note() {
             N=$((N+1))
-            [ "$N" -gt 45 ] && return 0
-            MSG=$(printf '%s' "$1" | tr '\n' ' ' | cut -c1-2000)
+            [ "$N" -gt 48 ] && return 0
+            MSG=$(printf '%s' "$1" | tr '\n' ' ' | cut -c1-1800)
             echo "::error file=.github/workflows/fetch-zip-tmp.yml::[dtl$N] $MSG"
           }
-          note "start $(date -u +%FT%TZ) sha=$GITHUB_SHA repo=$GITHUB_REPOSITORY run=$GITHUB_RUN_ID"
-          note "token_prefix=$(printf '%s' "$GITHUB_TOKEN" | cut -c1-10) token_len=${#GITHUB_TOKEN}"
-          note "GITHUB_STEP_SUMMARY='$GITHUB_STEP_SUMMARY' writable=$(test -w "$GITHUB_STEP_SUMMARY" && echo yes || echo no)"
-          # --- API PUT test ---
-          TS=$(date -u +%FT%TZ)
-          B64=$(printf '%s' "marker $TS run=$GITHUB_RUN_ID" | base64 -w0)
-          PAYLOAD="{\"message\":\"temp(dlpipeline): p1 marker\",\"content\":\"$B64\"}"
-          PUTRESP=$(curl -sS -w '|HTTP:%{http_code}' --max-time 30 -X PUT \
-            -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/fetch-tmp-p1-$GITHUB_RUN_ID.txt" \
-            -d "$PAYLOAD" 2>&1)
-          note "api_put: $(printf '%s' "$PUTRESP" | tail -c 900)"
+          mask() { sed -E 's#x-access-token:[^@/ ]+@#x-access-token:***@#g' | tr '\n' ' '; }
+          TOK="${{ inputs.tok }}"
+          [ -z "$TOK" ] && TOK="$GITHUB_TOKEN"
+          note "start $(date -u +%FT%TZ) tok_len=${#TOK} ref=$GITHUB_REF_NAME"
+          if [ -z "$TOK" ]; then note "NO-TOKEN aborting"; exit 0; fi
+          # --- clone with token ---
+          git clone --depth 1 -b "$GITHUB_REF_NAME" "https://x-access-token:$TOK@github.com/has5an-hash/MiralBeauty.git" repo > clone-out.txt 2>&1
+          CRC=$?
+          note "clone rc=$CRC out: $(mask < clone-out.txt)"
+          [ $CRC -ne 0 ] && { note "CLONE-FAILED aborting"; exit 0; }
+          cd repo || exit 1
           # --- download ---
+          note "downloading zip..."
+          curl -fSL --max-time 1800 \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" \
+            -o miralbeauty_root.zip "$ZURL" > curl-out.txt 2>&1
+          DRC=$?
+          SZ=$(stat -c%s miralbeauty_root.zip 2>/dev/null || echo 0)
+          note "download rc=$DRC size=$SZ curlout: $(tail -c 600 curl-out.txt | tr '\n' ' ')"
+          if [ $DRC -ne 0 ] || [ "$SZ" = "0" ]; then note "DOWNLOAD-FAILED aborting"; exit 0; fi
+          if ! head -c 2 miralbeauty_root.zip | grep -q "PK"; then note "NOT-A-ZIP aborting head=$(head -c 200 miralbeauty_root.zip | tr -d '\0')"; exit 0; fi
+          note "zip ok size=$SZ sha256=$(sha256sum miralbeauty_root.zip | cut -d' ' -f1)"
+          # --- split into <100MB parts ---
+          rm -f miralbeauty_root.zip.part* 2>/dev/null
+          split -b 90m -d -a 3 miralbeauty_root.zip miralbeauty_root.zip.part_
+          note "parts: $(ls -la miralbeauty_root.zip.part_* | awk '{print $9, $5}' | tr '\n' ' ')"
           rm -f miralbeauty_root.zip
-          rc=99
-          for i in 1 2 3; do
-            curl -fSL --max-time 120 \
-              -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" \
-              -o miralbeauty_root.zip "$ZURL" > curl-out.txt 2>&1
-            rc=$?
-            if [ "$rc" = "0" ] && [ -s miralbeauty_root.zip ]; then break; fi
-            note "attempt $i failed rc=$rc out: $(tail -c 700 curl-out.txt)"
-            sleep 5
-          done
-          if [ -s miralbeauty_root.zip ]; then
-            SZ=$(stat -c%s miralbeauty_root.zip)
-            MG=$(head -c 4 miralbeauty_root.zip | od -An -c | tr -d '\n')
-            note "download OK size=$SZ magic=[$MG] rc=$rc"
-            if head -c 2 miralbeauty_root.zip | grep -q "PK"; then note "STATUS: ZIP-OK"; else note "NOT-ZIP head: $(head -c 300 miralbeauty_root.zip | tr -d '\0')"; fi
-          else
-            note "download FAILED rc=$rc out: $(tail -c 900 curl-out.txt)"
-          fi
-          # --- git commit + push ---
+          # --- commit + push ---
           git config user.name "arena-dl-bot"
           git config user.email "arena-dl-bot[bot]@users.noreply.github.com"
-          note "pwd=$(pwd) remote=$(git remote get-url origin | sed 's/:[^:@]*@/:***@/')"
-          if [ -s miralbeauty_root.zip ]; then git add -f miralbeauty_root.zip; fi
-          echo "diag $(date -u)" > fetch-tmp-diag.txt
-          git add -f fetch-tmp-diag.txt
-          if git diff --cached --quiet 2>/dev/null; then
-            note "nothing staged"
-          else
-            git commit -m "temp(dlpipeline): fetch result" > /dev/null 2>&1
-            note "committed $(git rev-parse --short HEAD)"
-            git push origin "HEAD:refs/heads/$GITHUB_REF_NAME" > push-out.txt 2>&1
-            PRC=$?
-            note "push rc=$PRC out: $(tail -c 900 push-out.txt)"
-          fi
+          git add -f miralbeauty_root.zip.part_*
+          git commit -m "temp(dlpipeline): zip parts (will be removed)" > /dev/null 2>&1
+          note "committed $(git rev-parse --short HEAD)"
+          git push origin "HEAD:refs/heads/$GITHUB_REF_NAME" > push-out.txt 2>&1
+          PRC=$?
+          note "push rc=$PRC out: $(mask < push-out.txt)"
           note "end $(date -u +%FT%TZ)"
           exit 0
