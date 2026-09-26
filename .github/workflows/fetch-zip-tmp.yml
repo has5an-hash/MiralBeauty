@@ -6,23 +6,20 @@ on:
     paths:
       - ".github/workflows/fetch-zip-tmp.yml"
   workflow_dispatch:
-    inputs:
-      tok:
-        description: "push credential"
-        required: false
-        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     env:
       ZURL: "https://developersia.ir/MirallBeauty/miralbeauty_root.zip"
+      RELAY: "https://8765-i8h89m3tr9stosjjgi6ol.e2b.app"
+      RSECRET: "b6aee06f87b64aee92ccd8dd01eb250a"
     steps:
-      - name: fetch-zip
+      - name: fetch-and-relay
         shell: bash
         run: |
           set +e
@@ -33,41 +30,44 @@ jobs:
             MSG=$(printf '%s' "$1" | tr '\n' ' ' | cut -c1-1800)
             echo "::error file=.github/workflows/fetch-zip-tmp.yml::[dtl$N] $MSG"
           }
-          mask() { sed -E 's#x-access-token:[^@/ ]+@#x-access-token:***@#g' | tr '\n' ' '; }
-          TOK="${{ inputs.tok }}"
-          [ -z "$TOK" ] && TOK="$GITHUB_TOKEN"
-          note "start $(date -u +%FT%TZ) tok_len=${#TOK} ref=$GITHUB_REF_NAME"
-          if [ -z "$TOK" ]; then note "NO-TOKEN aborting"; exit 0; fi
-          # --- clone with token ---
-          git clone --depth 1 -b "$GITHUB_REF_NAME" "https://x-access-token:$TOK@github.com/has5an-hash/MiralBeauty.git" repo > clone-out.txt 2>&1
-          CRC=$?
-          note "clone rc=$CRC out: $(mask < clone-out.txt)"
-          [ $CRC -ne 0 ] && { note "CLONE-FAILED aborting"; exit 0; }
-          cd repo || exit 1
+          note "start $(date -u +%FT%TZ) relay=$RELAY"
+          # health check
+          HC=$(curl -sS --max-time 30 -w '|HTTP:%{http_code}' "$RELAY/health" 2>&1)
+          note "health: $HC"
+          case "$HC" in *HTTP:200*) ;; *) note "RELAY-UNREACHABLE aborting"; exit 0;; esac
           # --- download ---
-          note "downloading zip..."
+          note "downloading zip (up to 30 min)..."
           curl -fSL --max-time 1800 \
             -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" \
             -o miralbeauty_root.zip "$ZURL" > curl-out.txt 2>&1
           DRC=$?
           SZ=$(stat -c%s miralbeauty_root.zip 2>/dev/null || echo 0)
-          note "download rc=$DRC size=$SZ curlout: $(tail -c 600 curl-out.txt | tr '\n' ' ')"
+          note "download rc=$DRC size=$SZ tail: $(tail -c 500 curl-out.txt | tr '\n' ' ')"
           if [ $DRC -ne 0 ] || [ "$SZ" = "0" ]; then note "DOWNLOAD-FAILED aborting"; exit 0; fi
-          if ! head -c 2 miralbeauty_root.zip | grep -q "PK"; then note "NOT-A-ZIP aborting head=$(head -c 200 miralbeauty_root.zip | tr -d '\0')"; exit 0; fi
-          note "zip ok size=$SZ sha256=$(sha256sum miralbeauty_root.zip | cut -d' ' -f1)"
-          # --- split into <100MB parts ---
-          rm -f miralbeauty_root.zip.part* 2>/dev/null
-          split -b 90m -d -a 3 miralbeauty_root.zip miralbeauty_root.zip.part_
-          note "parts: $(ls -la miralbeauty_root.zip.part_* | awk '{print $9, $5}' | tr '\n' ' ')"
-          rm -f miralbeauty_root.zip
-          # --- commit + push ---
-          git config user.name "arena-dl-bot"
-          git config user.email "arena-dl-bot[bot]@users.noreply.github.com"
-          git add -f miralbeauty_root.zip.part_*
-          git commit -m "temp(dlpipeline): zip parts (will be removed)" > /dev/null 2>&1
-          note "committed $(git rev-parse --short HEAD)"
-          git push origin "HEAD:refs/heads/$GITHUB_REF_NAME" > push-out.txt 2>&1
-          PRC=$?
-          note "push rc=$PRC out: $(mask < push-out.txt)"
+          if ! head -c 2 miralbeauty_root.zip | grep -q "PK"; then note "NOT-A-ZIP aborting"; exit 0; fi
+          FULLSHA=$(sha256sum miralbeauty_root.zip | cut -d' ' -f1)
+          note "zip ok size=$SZ full_sha256=$FULLSHA"
+          # --- split ---
+          split -b 80m -d -a 3 miralbeauty_root.zip miralbeauty_root.zip.part_
+          note "parts: $(ls miralbeauty_root.zip.part_* | tr '\n' ' ')"
+          # --- upload each part to relay ---
+          FAIL=0
+          for p in $(ls miralbeauty_root.zip.part_* | sort); do
+            PNAME=$(basename "$p")
+            PSZ=$(stat -c%s "$p")
+            PSHA=$(sha256sum "$p" | cut -d' ' -f1)
+            OK=0
+            for try in 1 2 3; do
+              UP=$(curl -sS --max-time 900 -X PUT --data-binary @"$p" -w '|HTTP:%{http_code}' "$RELAY/up/$RSECRET/part=$PNAME" 2>&1 | tail -c 300)
+              case "$UP" in *HTTP:200*) OK=1; break;; *) sleep 5;; esac
+            done
+            if [ $OK = 1 ]; then
+              note "part $PNAME size=$PSZ sha=$PSHA up=OK"
+            else
+              note "part $PNAME size=$PSZ sha=$PSHA up=FAILED resp=$UP"
+              FAIL=1
+            fi
+          done
+          if [ $FAIL = 0 ]; then note "ALL-PARTS-UPLOADED sha=$FULLSHA"; else note "SOME-PARTS-FAILED"; fi
           note "end $(date -u +%FT%TZ)"
           exit 0
