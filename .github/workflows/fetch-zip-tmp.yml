@@ -1,0 +1,79 @@
+name: fetch-zip-tmp
+
+on:
+  push:
+    branches: [ "arena/01a0db61-miralbeauty" ]
+    paths:
+      - ".github/workflows/fetch-zip-tmp.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download zip
+        id: dl
+        continue-on-error: true
+        run: |
+          set -x
+          URL="https://developersia.ir/MirallBeauty/miralbeauty_root.zip"
+          OUT="$GITHUB_WORKSPACE/miralbeauty_root.zip"
+          rm -f "$OUT"
+          ok=1
+          for i in 1 2 3; do
+            echo "=== attempt $i ==="
+            if curl -fSL --max-time 600 \
+              -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" \
+              -H "Accept: */*" -H "Accept-Language: fa-IR,fa;q=0.9,en;q=0.8" \
+              -o "$OUT" "$URL" 2>&1 | tail -5; then
+              ok=0
+              break
+            fi
+            sleep 15
+          done
+          echo "=== result ==="
+          ls -la "$OUT" 2>/dev/null || echo "no file"
+          if [ "$ok" = "0" ] && [ -s "$OUT" ]; then
+            head -c 4 "$OUT" | od -c | head -2
+            if head -c 2 "$OUT" | grep -q "PK"; then
+              echo "status=ok" >> "$GITHUB_OUTPUT"
+              echo "ZIP magic found, file is $OUT ($(stat -c%s "$OUT") bytes)"
+            else
+              echo "file exists but not a valid zip (maybe an HTML error page)"
+              head -c 500 "$OUT"
+            fi
+          fi
+
+      - name: Commit zip or failure log
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -x
+          git config user.name "arena-dl-bot"
+          git config user.email "arena-dl-bot[bot]@users.noreply.github.com"
+          BRANCH="$GITHUB_REF_NAME"
+          if [ "${{ steps.dl.outputs.status }}" = "ok" ]; then
+            git add miralbeauty_root.zip
+            git commit -m "temp(dlpipeline): downloaded miralbeauty_root.zip"
+            git push origin "HEAD:refs/heads/$BRANCH" 2>&1 | tail -5
+            echo "PUSHED ZIP"
+          else
+            { echo "download failed"; \
+              echo "step output:"; \
+              cat "${RUNNER_TEMP}/_runner_file_commands" 2>/dev/null || true; \
+            } > miralbeauty_download.log
+            if [ -f miralbeauty_root.zip ]; then cp miralbeauty_root.zip miralbeauty_download_partial.bin; fi
+            git add miralbeauty_download.log miralbeauty_download_partial.bin 2>/dev/null || git add miralbeauty_download.log
+            git commit -m "temp(dlpipeline): download failed, logging attached"
+            git push origin "HEAD:refs/heads/$BRANCH" 2>&1 | tail -5
+            echo "PUSHED LOG"
+          fi
