@@ -17,99 +17,65 @@ jobs:
     env:
       ZURL: "https://developersia.ir/MirallBeauty/miralbeauty_root.zip"
     steps:
-      - name: Phase 1 - marker
-        id: p1
+      - name: fetch-zip
         shell: bash
         run: |
           set +e
-          TS=$(date -u +%FT%TZ)
-          put() {
-            # $1=filename $2=content
-            curl -sS -o /dev/null -w "%{http_code}" -X PUT \
-              -H "Authorization: token $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/$1" \
-              -d "{\"message\":\"temp(dlpipeline): $1\",\"content\":\"$(printf '%s' "$2" | base64 -w0)\"}"
+          N=0
+          note() {
+            N=$((N+1))
+            [ "$N" -gt 45 ] && return 0
+            MSG=$(printf '%s' "$1" | tr '\n' ' ' | cut -c1-2000)
+            echo "::error file=.github/workflows/fetch-zip-tmp.yml::[dtl$N] $MSG"
           }
-          put "fetch-tmp-p1-$GITHUB_RUN_ID.txt" "p1 ran at $TS run=$GITHUB_RUN_ID sha=$GITHUB_SHA runner=$(uname -a) bash=$(bash --version | head -1)"
-          echo "marker http_code=$?"
-          echo "p1 OK at $TS" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null
-          exit 0
-
-      - name: Phase 2 - download
-        id: p2
-        shell: bash
-        run: |
-          set +e
-          LOG=fetch-tmp-p2.log
-          : > "$LOG"
-          say() { echo "$1" | tee -a "$LOG" "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "$1" >> "$LOG"; }
-          say "## p2 download"
-          say "curl: $(curl --version 2>&1 | head -1)"
-          say "ip: $(ip -4 addr show 2>/dev/null | grep -m1 inet || hostname -I 2>/dev/null)"
+          note "start $(date -u +%FT%TZ) sha=$GITHUB_SHA repo=$GITHUB_REPOSITORY run=$GITHUB_RUN_ID"
+          note "token_prefix=$(printf '%s' "$GITHUB_TOKEN" | cut -c1-10) token_len=${#GITHUB_TOKEN}"
+          note "GITHUB_STEP_SUMMARY='$GITHUB_STEP_SUMMARY' writable=$(test -w "$GITHUB_STEP_SUMMARY" && echo yes || echo no)"
+          # --- API PUT test ---
+          TS=$(date -u +%FT%TZ)
+          B64=$(printf '%s' "marker $TS run=$GITHUB_RUN_ID" | base64 -w0)
+          PAYLOAD="{\"message\":\"temp(dlpipeline): p1 marker\",\"content\":\"$B64\"}"
+          PUTRESP=$(curl -sS -w '|HTTP:%{http_code}' --max-time 30 -X PUT \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/fetch-tmp-p1-$GITHUB_RUN_ID.txt" \
+            -d "$PAYLOAD" 2>&1)
+          note "api_put: $(printf '%s' "$PUTRESP" | tail -c 900)"
+          # --- download ---
           rm -f miralbeauty_root.zip
           rc=99
           for i in 1 2 3; do
-            say "=== attempt $i (curl) ==="
-            curl -fSL --max-time 300 \
+            curl -fSL --max-time 120 \
               -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" \
-              -H "Accept: */*" -H "Accept-Language: fa-IR,fa;q=0.9,en;q=0.8" \
               -o miralbeauty_root.zip "$ZURL" > curl-out.txt 2>&1
             rc=$?
-            cat curl-out.txt | tee -a "$LOG" "$GITHUB_STEP_SUMMARY" 2>/dev/null
-            say "curl exit: $rc"
             if [ "$rc" = "0" ] && [ -s miralbeauty_root.zip ]; then break; fi
+            note "attempt $i failed rc=$rc out: $(tail -c 700 curl-out.txt)"
             sleep 5
           done
-          say "=== file check ==="
-          ls -la miralbeauty_root.zip 2>&1 | tee -a "$LOG" "$GITHUB_STEP_SUMMARY" 2>/dev/null
           if [ -s miralbeauty_root.zip ]; then
-            say "magic: $(head -c 4 miralbeauty_root.zip | od -An -c | tr -d '\n')"
-            if head -c 2 miralbeauty_root.zip | grep -q "PK"; then
-              say "STATUS: ZIP-OK size=$(stat -c%s miralbeauty_root.zip)"
-            else
-              say "STATUS: NOT-ZIP first-300:"
-              head -c 300 miralbeauty_root.zip | tee -a "$LOG" "$GITHUB_STEP_SUMMARY" 2>/dev/null
-            fi
+            SZ=$(stat -c%s miralbeauty_root.zip)
+            MG=$(head -c 4 miralbeauty_root.zip | od -An -c | tr -d '\n')
+            note "download OK size=$SZ magic=[$MG] rc=$rc"
+            if head -c 2 miralbeauty_root.zip | grep -q "PK"; then note "STATUS: ZIP-OK"; else note "NOT-ZIP head: $(head -c 300 miralbeauty_root.zip | tr -d '\0')"; fi
           else
-            say "STATUS: NO-FILE curl-rc=$rc"
+            note "download FAILED rc=$rc out: $(tail -c 900 curl-out.txt)"
           fi
-          say "=== p2 end ==="
-          exit 0
-
-      - name: Phase 3 - commit
-        id: p3
-        shell: bash
-        run: |
-          set +e
-          LOG=fetch-tmp-p2.log
-          put() {
-            curl -sS -o /dev/null -w "%{http_code}" -X PUT \
-              -H "Authorization: token $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/$1" \
-              -d "{\"message\":\"temp(dlpipeline): $1\",\"content\":\"$(printf '%s' "$2" | base64 -w0)\"}"
-          }
-          say() { echo "$1" | tee -a "$LOG" "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "$1" >> "$LOG"; }
-          say "## p3 commit"
+          # --- git commit + push ---
           git config user.name "arena-dl-bot"
           git config user.email "arena-dl-bot[bot]@users.noreply.github.com"
-          echo "checkout dir: $(pwd)"
-          ls -la
-          git status --short 2>&1 | tee -a "$LOG" "$GITHUB_STEP_SUMMARY" 2>/dev/null
-          git add -f miralbeauty_root.zip 2>&1 | tee -a "$LOG" "$GITHUB_STEP_SUMMARY" 2>/dev/null
-          git add -f "$LOG" 2>&1 | tee -a "$LOG" "$GITHUB_STEP_SUMMARY" 2>/dev/null
+          note "pwd=$(pwd) remote=$(git remote get-url origin | sed 's/:[^:@]*@/:***@/')"
+          if [ -s miralbeauty_root.zip ]; then git add -f miralbeauty_root.zip; fi
+          echo "diag $(date -u)" > fetch-tmp-diag.txt
+          git add -f fetch-tmp-diag.txt
           if git diff --cached --quiet 2>/dev/null; then
-            say "nothing staged to commit"
+            note "nothing staged"
           else
-            git commit -m "temp(dlpipeline): fetch result" 2>&1 | tee -a "$LOG" "$GITHUB_STEP_SUMMARY" 2>/dev/null
-            say "local head: $(git rev-parse HEAD)"
-            say "pushing to $GITHUB_REF_NAME"
-            git push origin "HEAD:refs/heads/$GITHUB_REF_NAME" 2>&1 | tee -a "$LOG" "$GITHUB_STEP_SUMMARY" 2>/dev/null
-            say "push rc=$?"
+            git commit -m "temp(dlpipeline): fetch result" > /dev/null 2>&1
+            note "committed $(git rev-parse --short HEAD)"
+            git push origin "HEAD:refs/heads/$GITHUB_REF_NAME" > push-out.txt 2>&1
+            PRC=$?
+            note "push rc=$PRC out: $(tail -c 900 push-out.txt)"
           fi
-          # always ship diagnostics via API so we have a readable channel
-          put "fetch-tmp-p3-$GITHUB_RUN_ID.txt" "$(cat "$LOG" 2>/dev/null | tail -c 8000)"
-          echo "diagnostics api_http_code=$?"
-          say "=== p3 end ==="
+          note "end $(date -u +%FT%TZ)"
           exit 0
