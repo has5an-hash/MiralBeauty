@@ -1,0 +1,223 @@
+name: Render Miral Beauty Hero Remix
+
+on:
+  push:
+    branches: [hero-remix-build-20261002]
+    paths:
+      - ".github/workflows/hero-remix-render.yml"
+  workflow_dispatch:
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg zip
+
+      - name: Render masters and delivery files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tmp final-hero-video
+
+          cat > /tmp/render.py <<'PY'
+          import subprocess, os, shlex
+          from pathlib import Path
+
+          SHOT=1.57
+          XFADE=0.12
+
+          # Editorial order: strong glam opening, service variety, polished ending.
+          # Final shot ends exactly where the first shot starts in source 2530 for a soft loop.
+          shots = [
+              ("document_5884360535620722530.mp4", 4.00, "glam hero opening"),
+              ("document_5884360535620722528.mp4", 6.00, "long blonde hair reveal"),
+              ("document_5884360535620722522.mp4", 4.00, "nail detail"),
+              ("document_5884360535620722518.mp4", 18.00, "soft finished makeup"),
+              ("document_5884360535620722531.mp4", 6.00, "bob hair movement"),
+              ("document_5884360535620722520.mp4", 11.80, "skin prep / beauty detail"),
+              ("document_5884360535620722525.mp4", 8.00, "platinum waves reveal"),
+              ("document_5884360535620722524.mp4", 16.00, "finished makeup portrait"),
+              ("document_5884360535620722533.mp4", 6.00, "fashion hair portrait"),
+              ("document_5884360535620722526.mp4", 10.00, "beauty portrait detail"),
+              ("document_5884360535620722527.mp4", 4.00, "blonde fashion movement"),
+              ("document_5884360535620722529.mp4", 17.50, "red lip beauty detail"),
+              ("document_5884360535620722532.mp4", 14.00, "glam close-up"),
+              ("document_5884360535620722519.mp4", 21.50, "red lip / rose finish"),
+              ("document_5884360535620722530.mp4", 2.43, "loop lead-in"),
+          ]
+
+          def run(cmd):
+              print("+", " ".join(shlex.quote(x) for x in cmd), flush=True)
+              subprocess.run(cmd, check=True)
+
+          def make_mobile(i, src, start):
+              out=f"tmp/mobile_{i:02d}.mp4"
+              vf=("fps=30,scale=1080:1920:flags=lanczos,"
+                  "eq=contrast=1.02:saturation=1.02:brightness=0.004,"
+                  "unsharp=5:5:0.22:5:5:0,format=yuv420p")
+              run(["ffmpeg","-y","-hide_banner","-loglevel","error",
+                   "-ss",f"{start:.3f}","-t",f"{SHOT:.3f}","-i",src,
+                   "-an","-vf",vf,"-r","30","-c:v","libx264",
+                   "-preset","ultrafast","-crf","12","-pix_fmt","yuv420p",out])
+              return out
+
+          def make_desktop(i, src, start):
+              out=f"tmp/desktop_{i:02d}.mp4"
+              fc=(
+                  "[0:v]fps=30,split=2[bg][fg];"
+                  "[bg]scale=1920:1080:force_original_aspect_ratio=increase,"
+                  "crop=1920:1080,gblur=sigma=34,"
+                  "eq=brightness=-0.14:saturation=0.78:contrast=1.02[bg2];"
+                  "[fg]scale=-2:1080:flags=lanczos,"
+                  "eq=contrast=1.02:saturation=1.02:brightness=0.004,"
+                  "unsharp=5:5:0.22:5:5:0[fg2];"
+                  "[bg2][fg2]overlay=x=W-w-220:y=(H-h)/2,"
+                  "drawbox=x=0:y=0:w=1050:h=1080:color=black@0.13:t=fill,"
+                  "format=yuv420p[outv]"
+              )
+              run(["ffmpeg","-y","-hide_banner","-loglevel","error",
+                   "-ss",f"{start:.3f}","-t",f"{SHOT:.3f}","-i",src,
+                   "-filter_complex",fc,"-map","[outv]","-an","-r","30",
+                   "-c:v","libx264","-preset","ultrafast","-crf","12",
+                   "-pix_fmt","yuv420p",out])
+              return out
+
+          def make_master(files, out):
+              cmd=["ffmpeg","-y","-hide_banner","-loglevel","error"]
+              for f in files:
+                  cmd += ["-i",f]
+              parts=[]
+              last="[0:v]"
+              for i in range(1,len(files)):
+                  nxt=f"[{i}:v]"
+                  label=f"[x{i}]"
+                  offset=i*(SHOT-XFADE)
+                  parts.append(f"{last}{nxt}xfade=transition=fade:duration={XFADE}:offset={offset:.3f}{label}")
+                  last=label
+              fc=";".join(parts)
+              cmd += ["-filter_complex",fc,"-map",last,"-an","-r","30",
+                      "-c:v","libx264","-preset","veryfast","-crf","10",
+                      "-pix_fmt","yuv420p",out]
+              run(cmd)
+
+          desktop=[]
+          mobile=[]
+          for i,(src,start,label) in enumerate(shots):
+              desktop.append(make_desktop(i,src,start))
+              mobile.append(make_mobile(i,src,start))
+
+          make_master(desktop,"tmp/desktop-master.mp4")
+          make_master(mobile,"tmp/mobile-master.mp4")
+
+          # Web delivery MP4s: constrained bitrate + H.264 High + Fast Start.
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i","tmp/desktop-master.mp4",
+               "-an","-c:v","libx264","-preset","medium","-profile:v","high","-level:v","4.1",
+               "-b:v","3000k","-maxrate","4000k","-bufsize","8000k",
+               "-pix_fmt","yuv420p","-r","30","-movflags","+faststart",
+               "final-hero-video/miral-hero-desktop.mp4"])
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i","tmp/mobile-master.mp4",
+               "-an","-c:v","libx264","-preset","medium","-profile:v","high","-level:v","4.1",
+               "-b:v","2300k","-maxrate","3200k","-bufsize","6400k",
+               "-pix_fmt","yuv420p","-r","30","-movflags","+faststart",
+               "final-hero-video/miral-hero-mobile.mp4"])
+
+          # Optional VP9 delivery.
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i","tmp/desktop-master.mp4",
+               "-an","-c:v","libvpx-vp9","-crf","32","-b:v","0",
+               "-deadline","good","-cpu-used","4","-row-mt","1","-pix_fmt","yuv420p",
+               "final-hero-video/miral-hero-desktop.webm"])
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i","tmp/mobile-master.mp4",
+               "-an","-c:v","libvpx-vp9","-crf","32","-b:v","0",
+               "-deadline","good","-cpu-used","4","-row-mt","1","-pix_fmt","yuv420p",
+               "final-hero-video/miral-hero-mobile.webm"])
+
+          # Posters from the strong opening shot.
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-ss","0.45",
+               "-i","final-hero-video/miral-hero-desktop.mp4","-frames:v","1",
+               "-c:v","libwebp","-quality","80","final-hero-video/miral-hero-poster-desktop.webp"])
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-ss","0.45",
+               "-i","final-hero-video/miral-hero-mobile.mp4","-frames:v","1",
+               "-c:v","libwebp","-quality","80","final-hero-video/miral-hero-poster-mobile.webp"])
+
+          # Human-readable edit decision log.
+          with open("final-hero-video/timeline.txt","w",encoding="utf-8") as f:
+              f.write("Miral Beauty Hero Remix\n")
+              f.write(f"Shot duration: {SHOT:.2f}s | Crossfade: {XFADE:.2f}s\n")
+              f.write(f"Expected final duration: {len(shots)*SHOT-(len(shots)-1)*XFADE:.2f}s\n\n")
+              for n,(src,start,label) in enumerate(shots,1):
+                  f.write(f"{n:02d}. {src} @ {start:.2f}s — {label}\n")
+          PY
+
+          python3 /tmp/render.py
+
+      - name: Build analysis and QC report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo 'file,width,height,duration,fps,codec,bitrate,orientation,audio' > final-hero-video/source-analysis.csv
+          for f in ./*.mp4; do
+            base="$(basename "$f")"
+            width=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$f")
+            height=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$f")
+            duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f")
+            fps=$(ffprobe -v error -select_streams v:0 -show_entries stream=avg_frame_rate -of csv=p=0 "$f")
+            codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "$f")
+            bitrate=$(ffprobe -v error -show_entries format=bit_rate -of csv=p=0 "$f")
+            audio=$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$f" | head -1 || true)
+            if [ "$height" -gt "$width" ]; then orientation=portrait; elif [ "$height" -lt "$width" ]; then orientation=landscape; else orientation=square; fi
+            if [ -n "$audio" ]; then hasaudio=yes; else hasaudio=no; fi
+            echo "$base,$width,$height,$duration,$fps,$codec,$bitrate,$orientation,$hasaudio" >> final-hero-video/source-analysis.csv
+          done
+
+          : > final-hero-video/ffprobe-final.txt
+          for f in final-hero-video/miral-hero-desktop.mp4 final-hero-video/miral-hero-mobile.mp4 final-hero-video/miral-hero-desktop.webm final-hero-video/miral-hero-mobile.webm; do
+            echo "===== $f =====" >> final-hero-video/ffprobe-final.txt
+            ffprobe -v error -show_entries format=filename,duration,size,bit_rate:stream=index,codec_name,width,height,pix_fmt,r_frame_rate,avg_frame_rate -of json "$f" >> final-hero-video/ffprobe-final.txt
+          done
+
+          python3 - <<'PY'
+          from pathlib import Path
+          lines=[]
+          ok=True
+          for p in [Path("final-hero-video/miral-hero-desktop.mp4"), Path("final-hero-video/miral-hero-mobile.mp4")]:
+              b=p.read_bytes()
+              moov=b.find(b"moov"); mdat=b.find(b"mdat")
+              fast = moov != -1 and mdat != -1 and moov < mdat
+              lines.append(f"{p.name}: moov={moov}, mdat={mdat}, faststart={fast}")
+              ok &= fast
+          Path("final-hero-video/faststart-check.txt").write_text("\n".join(lines)+"\n")
+          if not ok:
+              raise SystemExit("Fast Start validation failed")
+          PY
+
+          # Final visual review contact sheets.
+          ffmpeg -y -hide_banner -loglevel error -i final-hero-video/miral-hero-desktop.mp4             -vf "fps=1/2,scale=480:-2:flags=lanczos,tile=4x3:nb_frames=12:padding=6:margin=6"             -frames:v 1 final-hero-video/review-desktop.jpg
+          ffmpeg -y -hide_banner -loglevel error -i final-hero-video/miral-hero-mobile.mp4             -vf "fps=1/2,scale=240:-2:flags=lanczos,tile=4x3:nb_frames=12:padding=6:margin=6"             -frames:v 1 final-hero-video/review-mobile.jpg
+
+          # Basic required checks.
+          test "$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 final-hero-video/miral-hero-desktop.mp4)" = "1920x1080"
+          test "$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 final-hero-video/miral-hero-mobile.mp4)" = "1080x1920"
+          test -z "$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 final-hero-video/miral-hero-desktop.mp4)"
+          test -z "$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 final-hero-video/miral-hero-mobile.mp4)"
+
+          du -h final-hero-video/*
+
+      - name: Package final ZIP
+        run: |
+          zip -9 -r MiralBeauty-Final-Hero-Video.zip final-hero-video/
+
+      - name: Upload final package
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiralBeauty-Final-Hero-Video
+          path: |
+            MiralBeauty-Final-Hero-Video.zip
+            final-hero-video/
+          retention-days: 14
