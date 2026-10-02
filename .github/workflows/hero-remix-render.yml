@@ -69,7 +69,7 @@ jobs:
 
           def make_desktop_panel(panel_name, panel_shots):
               clips=[]
-              panel_shot=2.32
+              panel_shot=2.40
               panel_xfade=0.16
               for j,(src,start,label) in enumerate(panel_shots):
                   out=f"tmp/{panel_name}_{j:02d}.mp4"
