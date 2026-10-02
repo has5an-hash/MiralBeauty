@@ -150,7 +150,7 @@ jobs:
 
               elif idx==3:
                   # Style 4: four equal tall panels, alternating vertical offsets.
-                  dims=[(445,791)]*4
+                  dims=[(444,790)]*4
                   effects=["clean","soft","grain","clean"]
                   ps=[panel(idx,i,*dims[i],scenes[idx][i],effects[i]) for i in range(4)]
                   fc=(
