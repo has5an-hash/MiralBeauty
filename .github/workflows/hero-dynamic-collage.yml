@@ -1,0 +1,242 @@
+name: Render Dynamic Hero Collage
+
+on:
+  push:
+    branches: [hero-remix-build-20261002]
+    paths:
+      - ".github/workflows/hero-dynamic-collage.yml"
+  workflow_dispatch:
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg zip
+
+      - name: Render dynamic collage hero
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tmp dynamic-hero
+
+          cat > /tmp/dynamic_collage.py <<'PY'
+          import subprocess, shlex, os
+          from pathlib import Path
+
+          FPS=30
+          SCENE=4.70
+          PANEL=2.43
+          P_XFADE=0.16
+          S_XFADE=0.32
+
+          def run(cmd):
+              print("+", " ".join(shlex.quote(x) for x in cmd), flush=True)
+              subprocess.run(cmd, check=True)
+
+          # Curated source pairs per scene/panel. All original portrait videos are preserved uncropped.
+          scenes = [
+              [
+                [("document_5884360535620722530.mp4",4.0),("document_5884360535620722525.mp4",8.0)],
+                [("document_5884360535620722528.mp4",5.5),("document_5884360535620722520.mp4",11.0)],
+                [("document_5884360535620722522.mp4",3.5),("document_5884360535620722531.mp4",6.0)],
+              ],
+              [
+                [("document_5884360535620722518.mp4",18.0),("document_5884360535620722527.mp4",4.0)],
+                [("document_5884360535620722524.mp4",16.0),("document_5884360535620722532.mp4",14.0)],
+                [("document_5884360535620722529.mp4",17.0),("document_5884360535620722533.mp4",6.0)],
+              ],
+              [
+                [("document_5884360535620722519.mp4",21.0),("document_5884360535620722526.mp4",10.0)],
+                [("document_5884360535620722525.mp4",7.5),("document_5884360535620722530.mp4",4.5)],
+                [("document_5884360535620722528.mp4",6.5),("document_5884360535620722522.mp4",4.0)],
+                [("document_5884360535620722531.mp4",5.0),("document_5884360535620722524.mp4",15.5)],
+              ],
+              [
+                [("document_5884360535620722533.mp4",5.5),("document_5884360535620722518.mp4",19.0)],
+                [("document_5884360535620722520.mp4",10.5),("document_5884360535620722529.mp4",17.5)],
+                [("document_5884360535620722532.mp4",13.5),("document_5884360535620722527.mp4",3.5)],
+                [("document_5884360535620722519.mp4",20.0),("document_5884360535620722526.mp4",9.5)],
+              ],
+              [
+                [("document_5884360535620722525.mp4",8.5),("document_5884360535620722530.mp4",2.2)],
+                [("document_5884360535620722524.mp4",16.5),("document_5884360535620722528.mp4",5.0)],
+                [("document_5884360535620722529.mp4",16.0),("document_5884360535620722519.mp4",21.5)],
+              ],
+          ]
+
+          def panel(scene_i, panel_i, w, h, pair, effect="clean"):
+              parts=[]
+              for k,(src,start) in enumerate(pair):
+                  out=f"tmp/s{scene_i}_p{panel_i}_{k}.mp4"
+                  # No crop: preserve whole frame, pad only if panel ratio differs.
+                  vf=(
+                    f"fps={FPS},scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,"
+                    f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=#130f12,"
+                    "eq=contrast=1.03:saturation=1.04:brightness=0.003,"
+                    "unsharp=5:5:0.20:5:5:0"
+                  )
+                  if effect=="soft":
+                      vf += ",vignette=PI/13"
+                  elif effect=="grain":
+                      vf += ",noise=alls=1.2:allf=t+u"
+                  elif effect=="glow":
+                      vf += ",gblur=sigma=0.25"
+                  vf += ",format=yuv420p"
+                  run(["ffmpeg","-y","-hide_banner","-loglevel","error",
+                       "-ss",str(start),"-t",str(PANEL),"-i",src,
+                       "-an","-vf",vf,"-r",str(FPS),"-c:v","libx264",
+                       "-preset","ultrafast","-crf","14","-pix_fmt","yuv420p",out])
+                  parts.append(out)
+
+              out=f"tmp/s{scene_i}_panel{panel_i}.mp4"
+              trans=["fade","smoothleft","circleopen","dissolve"][(scene_i+panel_i)%4]
+              run(["ffmpeg","-y","-hide_banner","-loglevel","error",
+                   "-i",parts[0],"-i",parts[1],
+                   "-filter_complex",
+                   f"[0:v][1:v]xfade=transition={trans}:duration={P_XFADE}:offset={PANEL-P_XFADE:.3f}[v]",
+                   "-map","[v]","-an","-t",str(SCENE),"-r",str(FPS),
+                   "-c:v","libx264","-preset","ultrafast","-crf","14","-pix_fmt","yuv420p",out])
+              return out
+
+          def compose_scene(idx):
+              base=f"tmp/scene{idx}.mp4"
+
+              if idx==0:
+                  # Style 1: clean 3-column editorial wall.
+                  dims=[(608,1080)]*3
+                  effects=["clean","soft","grain"]
+                  ps=[panel(idx,i,*dims[i],scenes[idx][i],effects[i]) for i in range(3)]
+                  fc=(
+                    "color=c=#140f13:s=1920x1080:r=30:d=4.70[bg];"
+                    "[bg][0:v]overlay=x=32:y=0[b1];"
+                    "[b1][1:v]overlay=x=656:y=0[b2];"
+                    "[b2][2:v]overlay=x=1280:y=0,"
+                    "drawbox=x=640:y=0:w=2:h=1080:color=white@0.10:t=fill,"
+                    "drawbox=x=1278:y=0:w=2:h=1080:color=white@0.10:t=fill[out]"
+                  )
+
+              elif idx==1:
+                  # Style 2: dominant center panel, narrow side panels, cinematic framing.
+                  dims=[(500,888),(700,1080),(500,888)]
+                  effects=["soft","clean","soft"]
+                  ps=[panel(idx,i,*dims[i],scenes[idx][i],effects[i]) for i in range(3)]
+                  fc=(
+                    "color=c=#100d10:s=1920x1080:r=30:d=4.70[bg];"
+                    "[bg][0:v]overlay=x=40:y=96[b1];"
+                    "[b1][1:v]overlay=x=610:y=0[b2];"
+                    "[b2][2:v]overlay=x=1380:y=96,"
+                    "drawbox=x=590:y=0:w=740:h=1080:color=white@0.025:t=fill[out]"
+                  )
+
+              elif idx==2:
+                  # Style 3: staggered 4-card fashion magazine composition.
+                  dims=[(430,764)]*4
+                  effects=["grain","clean","soft","grain"]
+                  ps=[panel(idx,i,*dims[i],scenes[idx][i],effects[i]) for i in range(4)]
+                  fc=(
+                    "color=c=#181116:s=1920x1080:r=30:d=4.70[bg];"
+                    "[bg][0:v]overlay=x=45:y=70[b1];"
+                    "[b1][1:v]overlay=x=505:y=220[b2];"
+                    "[b2][2:v]overlay=x=965:y=75[b3];"
+                    "[b3][3:v]overlay=x=1425:y=210,"
+                    "drawbox=x=0:y=0:w=1920:h=1080:color=white@0.01:t=fill[out]"
+                  )
+
+              elif idx==3:
+                  # Style 4: four equal tall panels, alternating vertical offsets.
+                  dims=[(445,791)]*4
+                  effects=["clean","soft","grain","clean"]
+                  ps=[panel(idx,i,*dims[i],scenes[idx][i],effects[i]) for i in range(4)]
+                  fc=(
+                    "color=c=#0f0c0f:s=1920x1080:r=30:d=4.70[bg];"
+                    "[bg][0:v]overlay=x=40:y=40[b1];"
+                    "[b1][1:v]overlay=x=505:y=245[b2];"
+                    "[b2][2:v]overlay=x=970:y=40[b3];"
+                    "[b3][3:v]overlay=x=1435:y=245[out]"
+                  )
+
+              else:
+                  # Style 5: closing 3-column wall with lifted center card and soft side framing.
+                  dims=[(560,995),(650,1080),(560,995)]
+                  effects=["soft","clean","soft"]
+                  ps=[panel(idx,i,*dims[i],scenes[idx][i],effects[i]) for i in range(3)]
+                  fc=(
+                    "color=c=#150f14:s=1920x1080:r=30:d=4.70[bg];"
+                    "[bg][0:v]overlay=x=35:y=42[b1];"
+                    "[b1][1:v]overlay=x=635:y=0[b2];"
+                    "[b2][2:v]overlay=x=1325:y=42,"
+                    "drawbox=x=615:y=0:w=690:h=1080:color=white@0.02:t=fill[out]"
+                  )
+
+              cmd=["ffmpeg","-y","-hide_banner","-loglevel","error"]
+              for p in ps:
+                  cmd += ["-i",p]
+              cmd += ["-filter_complex",fc,"-map","[out]","-an","-t",str(SCENE),"-r",str(FPS),
+                      "-c:v","libx264","-preset","veryfast","-crf","12","-pix_fmt","yuv420p",base]
+              run(cmd)
+              return base
+
+          scene_files=[compose_scene(i) for i in range(5)]
+
+          # Layout changes themselves get different premium transitions.
+          cmd=["ffmpeg","-y","-hide_banner","-loglevel","error"]
+          for s in scene_files:
+              cmd += ["-i",s]
+          transitions=["smoothleft","circleopen","fade","smoothright"]
+          parts=[]
+          last="[0:v]"
+          for i in range(1,len(scene_files)):
+              lab=f"[s{i}]"
+              off=i*(SCENE-S_XFADE)
+              parts.append(f"{last}[{i}:v]xfade=transition={transitions[i-1]}:duration={S_XFADE}:offset={off:.3f}{lab}")
+              last=lab
+          master="tmp/dynamic-master.mp4"
+          cmd += ["-filter_complex",";".join(parts),"-map",last,"-an","-r",str(FPS),
+                  "-c:v","libx264","-preset","veryfast","-crf","10","-pix_fmt","yuv420p",master]
+          run(cmd)
+
+          # Web delivery.
+          out="dynamic-hero/miral-hero-desktop-dynamic-collage.mp4"
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i",master,
+               "-an","-c:v","libx264","-preset","medium","-profile:v","high","-level:v","4.1",
+               "-b:v","3600k","-maxrate","4500k","-bufsize","9000k",
+               "-pix_fmt","yuv420p","-r","30","-movflags","+faststart",out])
+
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-ss","0.8","-i",out,
+               "-frames:v","1","-c:v","libwebp","-quality","82",
+               "dynamic-hero/miral-hero-desktop-dynamic-poster.webp"])
+
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i",out,
+               "-vf","fps=1/1.8,scale=480:-2:flags=lanczos,tile=4x3:nb_frames=12:padding=6:margin=6",
+               "-frames:v","1","dynamic-hero/review-dynamic-collage.jpg"])
+          PY
+
+          python3 /tmp/dynamic_collage.py
+
+          ffprobe -v error             -show_entries format=duration,size,bit_rate:stream=codec_name,width,height,r_frame_rate,pix_fmt             -of json dynamic-hero/miral-hero-desktop-dynamic-collage.mp4             > dynamic-hero/ffprobe.json
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("dynamic-hero/miral-hero-desktop-dynamic-collage.mp4")
+          b=p.read_bytes()
+          moov=b.find(b"moov"); mdat=b.find(b"mdat")
+          Path("dynamic-hero/faststart.txt").write_text(f"moov={moov}\nmdat={mdat}\nfaststart={moov!=-1 and mdat!=-1 and moov<mdat}\n")
+          assert moov!=-1 and mdat!=-1 and moov<mdat
+          PY
+
+          zip -9 -r MiralBeauty-Dynamic-Collage-Hero.zip dynamic-hero/
+
+      - name: Upload dynamic collage
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiralBeauty-Dynamic-Collage-Hero
+          path: |
+            MiralBeauty-Dynamic-Collage-Hero.zip
+            dynamic-hero/
+          retention-days: 14
