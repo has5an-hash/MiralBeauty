@@ -1,0 +1,252 @@
+name: Render Miral Final Cinematic V3
+
+on:
+  push:
+    branches: [hero-remix-build-20261002]
+    paths:
+      - ".github/workflows/hero-final-v3.yml"
+  workflow_dispatch:
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg zip
+
+      - name: Render V3
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tmp final-v3
+
+          cat > /tmp/v3.py <<'PY'
+          import subprocess, shlex, json
+          from pathlib import Path
+
+          FPS=30
+          DS=4.52
+          DSHOT=2.34
+          DX=0.16
+          SX=0.30
+
+          S=[
+            "document_5884360535620722518.mp4","document_5884360535620722519.mp4",
+            "document_5884360535620722520.mp4","document_5884360535620722522.mp4",
+            "document_5884360535620722524.mp4","document_5884360535620722525.mp4",
+            "document_5884360535620722526.mp4","document_5884360535620722527.mp4",
+            "document_5884360535620722528.mp4","document_5884360535620722529.mp4",
+            "document_5884360535620722530.mp4","document_5884360535620722531.mp4",
+            "document_5884360535620722532.mp4","document_5884360535620722533.mp4",
+          ]
+          T={S[0]:18,S[1]:21,S[2]:11,S[3]:4,S[4]:16,S[5]:8,S[6]:10,S[7]:4,S[8]:6,S[9]:17,S[10]:4,S[11]:6,S[12]:14,S[13]:6}
+          ud=set(); um=set()
+
+          def run(cmd):
+            print("+"," ".join(shlex.quote(str(x)) for x in cmd),flush=True)
+            subprocess.run([str(x) for x in cmd],check=True)
+
+          def cut(src,w,h,out,used,dur,look="clean"):
+            used.add(src)
+            vf=(f"fps=30,scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,"
+                f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=#100b0f,"
+                "eq=contrast=1.035:saturation=1.04:brightness=0.004:gamma=1.01,"
+                "unsharp=5:5:0.18:5:5:0")
+            if look=="soft": vf+=",vignette=PI/15"
+            if look=="film": vf+=",noise=alls=0.65:allf=t+u"
+            vf+=",format=yuv420p"
+            run(["ffmpeg","-y","-hide_banner","-loglevel","error","-ss",str(T[src]),"-t",str(dur),"-i",src,
+                 "-an","-vf",vf,"-r","30","-c:v","libx264","-preset","ultrafast","-crf","13","-pix_fmt","yuv420p",out])
+
+          def pair(name,a,b,w,h,look,tr):
+            x=f"tmp/{name}a.mp4"; y=f"tmp/{name}b.mp4"; out=f"tmp/{name}.mp4"
+            cut(a,w,h,x,ud,DSHOT,look); cut(b,w,h,y,ud,DSHOT,look)
+            run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i",x,"-i",y,
+                 "-filter_complex",f"[0:v][1:v]xfade=transition={tr}:duration={DX}:offset={DSHOT-DX:.3f}[v]",
+                 "-map","[v]","-an","-t",str(DS),"-r","30","-c:v","libx264","-preset","ultrafast","-crf","13","-pix_fmt","yuv420p",out])
+            return out
+
+          def scene(name,inputs,fc):
+            out=f"tmp/{name}.mp4"; cmd=["ffmpeg","-y","-hide_banner","-loglevel","error"]
+            for i in inputs: cmd+=["-i",i]
+            cmd+=["-filter_complex",fc,"-map","[out]","-an","-t",str(DS),"-r","30",
+                  "-c:v","libx264","-preset","veryfast","-crf","10","-pix_fmt","yuv420p",out]
+            run(cmd); return out
+
+          # DESKTOP: 5 layouts with actual animated panel entrances and parallax.
+          D=[]
+
+          p0=pair("v3d0p0",S[10],S[5],608,1080,"clean","smoothleft")
+          p1=pair("v3d0p1",S[8],S[2],608,1080,"soft","dissolve")
+          p2=pair("v3d0p2",S[3],S[11],608,1080,"film","smoothright")
+          fc=(
+            "color=c=#100a0f:s=1920x1080:r=30:d=4.52[bg];"
+            "[bg][0:v]overlay=x='if(lt(t,0.45),-608+(640/0.45)*t,32+7*sin(t*0.9))':y=0[b1];"
+            "[b1][1:v]overlay=x=656:y='if(lt(t,0.45),-1080+(1080/0.45)*t,0)'[b2];"
+            "[b2][2:v]overlay=x='if(lt(t,0.45),1920-(640/0.45)*t,1280+7*sin(t*0.8+2))':y=0[comp];"
+            "color=c=#fff1f7@0.06:s=160x1500:r=30:d=4.52,format=rgba,rotate=-0.24:c=black@0[shine];"
+            "[comp][shine]overlay=x='-300+540*t':y=-220,"
+            "drawbox=x=640:y=0:w=2:h=1080:color=#f7d9e5@0.22:t=fill,"
+            "drawbox=x=1278:y=0:w=2:h=1080:color=#f7d9e5@0.22:t=fill[out]"
+          )
+          D.append(scene("v3dscene0",[p0,p1,p2],fc))
+
+          bg=pair("v3d1bg",S[0],S[7],1920,1080,"soft","hblur")
+          c=pair("v3d1c",S[4],S[12],690,1080,"clean","circleopen")
+          l=pair("v3d1l",S[9],S[13],470,836,"film","dissolve")
+          r=pair("v3d1r",S[1],S[6],470,836,"soft","smoothleft")
+          fc=(
+            "[0:v]gblur=sigma=30,eq=brightness=-0.20:saturation=0.66[bg];"
+            "[bg][1:v]overlay=x=615:y='if(lt(t,0.4),-1080+(1080/0.4)*t,0)'[b1];"
+            "[b1][2:v]overlay=x='if(lt(t,0.45),-470+(514/0.45)*t,44+10*sin(t*0.8))':y=122[b2];"
+            "[b2][3:v]overlay=x='if(lt(t,0.45),1920-(514/0.45)*t,1406+10*sin(t*0.8+2))':y=122[comp];"
+            "[comp]drawbox=x=600:y=0:w=720:h=1080:color=#f8dbe7@0.14:t=5[out]"
+          )
+          D.append(scene("v3dscene1",[bg,c,l,r],fc))
+
+          bg=pair("v3d2bg",S[13],S[0],1920,1080,"soft","dissolve")
+          a=pair("v3d2a",S[2],S[9],430,764,"film","smoothup")
+          b=pair("v3d2b",S[12],S[7],430,764,"clean","smoothleft")
+          c=pair("v3d2c",S[1],S[6],430,764,"soft","circleopen")
+          fc=(
+            "[0:v]gblur=sigma=35,eq=brightness=-0.23:saturation=0.60[bg];"
+            "[bg][1:v]overlay=x='90+20*sin(t*0.72)':y='if(lt(t,0.5),1080-(1010/0.5)*t,70)'[b1];"
+            "[b1][2:v]overlay=x=745:y='if(lt(t,0.5),-764+(994/0.5)*t,230)'[b2];"
+            "[b2][3:v]overlay=x='1390+20*sin(t*0.7+2)':y='if(lt(t,0.5),1080-(1010/0.5)*t,70)'[comp];"
+            "color=c=#ffe1ec@0.045:s=240x1450:r=30:d=4.52,format=rgba,rotate=0.23:c=black@0[shine];"
+            "[comp][shine]overlay=x='1800-510*t':y=-180[out]"
+          )
+          D.append(scene("v3dscene2",[bg,a,b,c],fc))
+
+          bg=pair("v3d3bg",S[5],S[10],1920,1080,"soft","fade")
+          l=pair("v3d3l",S[8],S[3],560,996,"clean","smoothright")
+          r=pair("v3d3r",S[11],S[4],560,996,"film","smoothleft")
+          m=pair("v3d3m",S[9],S[13],380,676,"soft","circleopen")
+          fc=(
+            "[0:v]gblur=sigma=25,eq=brightness=-0.17:saturation=0.70[bg];"
+            "[bg][1:v]overlay=x='if(lt(t,0.45),-560+(630/0.45)*t,70)':y=42[b1];"
+            "[b1][2:v]overlay=x='if(lt(t,0.45),1920-(630/0.45)*t,1290)':y=42[b2];"
+            "[b2][3:v]overlay=x='770+24*sin(t*0.95)':y='202+14*sin(t*0.7)'[comp];"
+            "[comp]drawbox=x='758+24*sin(t*0.95)':y='190+14*sin(t*0.7)':w=404:h=700:color=#fff0f7@0.18:t=4[out]"
+          )
+          D.append(scene("v3dscene3",[bg,l,r,m],fc))
+
+          p0=pair("v3d4p0",S[5],S[8],608,1080,"soft","dissolve")
+          p1=pair("v3d4p1",S[4],S[10],608,1080,"clean","circleopen")
+          p2=pair("v3d4p2",S[9],S[1],608,1080,"film","smoothleft")
+          fc=(
+            "color=c=#100a0f:s=1920x1080:r=30:d=4.52[bg];"
+            "[bg][0:v]overlay=x=32:y=0[b1];[b1][1:v]overlay=x=656:y=0[b2];[b2][2:v]overlay=x=1280:y=0[comp];"
+            "color=c=white@0.075:s=100x1500:r=30:d=4.52,format=rgba,rotate=-0.18:c=black@0[g];"
+            "[comp][g]overlay=x='-180+720*t':y=-220[out]"
+          )
+          D.append(scene("v3dscene4",[p0,p1,p2],fc))
+
+          cmd=["ffmpeg","-y","-hide_banner","-loglevel","error"]
+          for x in D: cmd+=["-i",x]
+          trs=["hblur","smoothleft","radial","fadeblack"]
+          parts=[]; last="[0:v]"
+          for i in range(1,5):
+              lab=f"[d{i}]"; off=i*(DS-SX)
+              parts.append(f"{last}[{i}:v]xfade=transition={trs[i-1]}:duration={SX}:offset={off:.3f}{lab}")
+              last=lab
+          cmd+=["-filter_complex",";".join(parts),"-map",last,"-an","-r","30","-c:v","libx264","-preset","veryfast","-crf","9","-pix_fmt","yuv420p","tmp/v3-desktop-master.mp4"]
+          run(cmd)
+
+          # MOBILE: 14 edge-to-edge full-screen shots. No floating cards, no black layouts.
+          ORDER=[S[10],S[5],S[8],S[2],S[3],S[11],S[0],S[7],S[4],S[12],S[9],S[13],S[1],S[6]]
+          MSHOT=1.62
+          MX=0.12
+          clips=[]
+          for i,src in enumerate(ORDER):
+              out=f"tmp/mob{i:02d}.mp4"
+              cut(src,1080,1920,out,um,MSHOT,["clean","soft","clean","film"][i%4])
+              clips.append(out)
+
+          cmd=["ffmpeg","-y","-hide_banner","-loglevel","error"]
+          for x in clips: cmd+=["-i",x]
+          trs=["smoothleft","dissolve","hblur","circleopen","smoothup","fadeblack","radial",
+               "smoothright","fade","hblur","smoothleft","dissolve","circleopen"]
+          parts=[]; last="[0:v]"
+          for i in range(1,len(clips)):
+              lab=f"[m{i}]"; off=i*(MSHOT-MX)
+              parts.append(f"{last}[{i}:v]xfade=transition={trs[i-1]}:duration={MX}:offset={off:.3f}{lab}")
+              last=lab
+          base="tmp/v3-mobile-base.mp4"
+          cmd+=["-filter_complex",";".join(parts),"-map",last,"-an","-r","30","-c:v","libx264","-preset","veryfast","-crf","9","-pix_fmt","yuv420p",base]
+          run(cmd)
+
+          # Limited luxury light sweeps over full-screen mobile sequence.
+          dur=14*MSHOT-13*MX
+          fc=(
+            f"color=c=#fff3f8@0.050:s=130x2300:r=30:d={dur:.3f},format=rgba,rotate=-0.17:c=black@0[shine];"
+            "[0:v][shine]overlay=x='-300+mod(330*t,1450)':y=-200:"
+            "enable='between(t,3.0,3.8)+between(t,10.0,10.8)+between(t,17.0,17.8)',format=yuv420p[out]"
+          )
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i",base,
+               "-filter_complex",fc,"-map","[out]","-an","-r","30",
+               "-c:v","libx264","-preset","veryfast","-crf","9","-pix_fmt","yuv420p","tmp/v3-mobile-master.mp4"])
+
+          assert len(ud)==14, (len(ud),set(S)-ud)
+          assert len(um)==14, (len(um),set(S)-um)
+
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i","tmp/v3-desktop-master.mp4",
+               "-an","-c:v","libx264","-preset","medium","-profile:v","high","-level:v","4.1",
+               "-b:v","4000k","-maxrate","5200k","-bufsize","10400k","-pix_fmt","yuv420p","-r","30",
+               "-movflags","+faststart","final-v3/miral-hero-desktop-final-v3.mp4"])
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i","tmp/v3-mobile-master.mp4",
+               "-an","-c:v","libx264","-preset","medium","-profile:v","high","-level:v","4.1",
+               "-b:v","2800k","-maxrate","3500k","-bufsize","7000k","-pix_fmt","yuv420p","-r","30",
+               "-movflags","+faststart","final-v3/miral-hero-mobile-final-v3.mp4"])
+
+          for typ in ["desktop","mobile"]:
+              inp=f"final-v3/miral-hero-{typ}-final-v3.mp4"
+              run(["ffmpeg","-y","-hide_banner","-loglevel","error","-ss","0.8","-i",inp,"-frames:v","1",
+                   "-c:v","libwebp","-quality","82",f"final-v3/miral-hero-{typ}-final-v3-poster.webp"])
+
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i","final-v3/miral-hero-desktop-final-v3.mp4",
+               "-vf","fps=1/1.7,scale=480:-2:flags=lanczos,tile=4x3:nb_frames=12:padding=6:margin=6","-frames:v","1","final-v3/review-desktop-v3.jpg"])
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i","final-v3/miral-hero-mobile-final-v3.mp4",
+               "-vf","fps=1/1.7,scale=240:-2:flags=lanczos,tile=4x3:nb_frames=12:padding=6:margin=6","-frames:v","1","final-v3/review-mobile-v3.jpg"])
+
+          Path("final-v3/source-usage.json").write_text(json.dumps({
+            "desktop_count":len(ud),"mobile_count":len(um),
+            "desktop_used":sorted(ud),"mobile_used":sorted(um)
+          },indent=2),encoding="utf-8")
+          PY
+
+          python3 /tmp/v3.py
+
+      - name: QC package
+        shell: bash
+        run: |
+          set -euo pipefail
+          D=final-v3/miral-hero-desktop-final-v3.mp4
+          M=final-v3/miral-hero-mobile-final-v3.mp4
+          test "$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$D")" = "1920x1080"
+          test "$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$M")" = "1080x1920"
+          test -z "$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$D")"
+          test -z "$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$M")"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          x=json.load(open("final-v3/source-usage.json"))
+          assert x["desktop_count"]==14 and x["mobile_count"]==14
+          for p in [Path("final-v3/miral-hero-desktop-final-v3.mp4"),Path("final-v3/miral-hero-mobile-final-v3.mp4")]:
+              b=p.read_bytes(); assert b.find(b"moov") < b.find(b"mdat")
+          PY
+          ffprobe -v error -show_entries format=filename,duration,size,bit_rate:stream=codec_name,width,height,r_frame_rate,pix_fmt -of json "$D" > final-v3/ffprobe-desktop.json
+          ffprobe -v error -show_entries format=filename,duration,size,bit_rate:stream=codec_name,width,height,r_frame_rate,pix_fmt -of json "$M" > final-v3/ffprobe-mobile.json
+          zip -9 -r MiralBeauty-Final-Cinematic-V3.zip final-v3/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MiralBeauty-Final-Cinematic-V3
+          path: |
+            MiralBeauty-Final-Cinematic-V3.zip
+            final-v3/
+          retention-days: 14
