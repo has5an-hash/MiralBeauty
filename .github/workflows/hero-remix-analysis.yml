@@ -1,6 +1,5 @@
 name: Hero Remix Analysis
 
-# second push trigger
 on:
   push:
     branches: [hero-remix-build-20261002]
@@ -14,10 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify tools
+      - name: Install ffmpeg
         run: |
-          ffmpeg -version | head -1
-          ffprobe -version | head -1
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
       - name: Analyze all source videos
         shell: bash
         run: |
@@ -41,7 +40,7 @@ jobs:
               -vf "fps=1/2,scale=360:-2:flags=lanczos,tile=4x3:nb_frames=12:padding=6:margin=6" \
               -frames:v 1 "hero-analysis/contact-sheets/$base.jpg" || true
           done
-          column -s, -t hero-analysis/analysis.csv
+          cat hero-analysis/analysis.csv
       - name: Upload analysis
         uses: actions/upload-artifact@v4
         with:
