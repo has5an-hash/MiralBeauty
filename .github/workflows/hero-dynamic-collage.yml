@@ -163,7 +163,7 @@ jobs:
 
               else:
                   # Style 5: closing 3-column wall with lifted center card and soft side framing.
-                  dims=[(560,995),(650,1080),(560,995)]
+                  dims=[(560,994),(650,1080),(560,994)]
                   effects=["soft","clean","soft"]
                   ps=[panel(idx,i,*dims[i],scenes[idx][i],effects[i]) for i in range(3)]
                   fc=(
