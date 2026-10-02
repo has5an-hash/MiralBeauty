@@ -67,24 +67,98 @@ jobs:
                    "-preset","ultrafast","-crf","12","-pix_fmt","yuv420p",out])
               return out
 
-          def make_desktop(i, src, start):
-              out=f"tmp/desktop_{i:02d}.mp4"
+          def make_desktop_panel(panel_name, panel_shots):
+              clips=[]
+              panel_shot=2.32
+              panel_xfade=0.16
+              for j,(src,start,label) in enumerate(panel_shots):
+                  out=f"tmp/{panel_name}_{j:02d}.mp4"
+                  vf=("fps=30,scale=608:1080:flags=lanczos,"
+                      "eq=contrast=1.025:saturation=1.035:brightness=0.004,"
+                      "unsharp=5:5:0.22:5:5:0,format=yuv420p")
+                  run(["ffmpeg","-y","-hide_banner","-loglevel","error",
+                       "-ss",f"{start:.3f}","-t",f"{panel_shot:.3f}","-i",src,
+                       "-an","-vf",vf,"-r","30","-c:v","libx264",
+                       "-preset","ultrafast","-crf","12","-pix_fmt","yuv420p",out])
+                  clips.append(out)
+
+              cmd=["ffmpeg","-y","-hide_banner","-loglevel","error"]
+              for clip in clips:
+                  cmd += ["-i",clip]
+              parts=[]
+              last="[0:v]"
+              for j in range(1,len(clips)):
+                  nxt=f"[{j}:v]"
+                  label=f"[p{j}]"
+                  offset=j*(panel_shot-panel_xfade)
+                  trans="fade" if j % 2 else "smoothleft"
+                  parts.append(f"{last}{nxt}xfade=transition={trans}:duration={panel_xfade}:offset={offset:.3f}{label}")
+                  last=label
+              out=f"tmp/{panel_name}_master.mp4"
+              cmd += ["-filter_complex",";".join(parts),"-map",last,"-an","-r","30",
+                      "-c:v","libx264","-preset","veryfast","-crf","11","-pix_fmt","yuv420p",out]
+              run(cmd)
+              return out
+
+          def make_desktop_mosaic():
+              # Three independent portrait reels fill ~95% of the 16:9 canvas with no source crop.
+              # Each panel changes on its own sequence so the hero feels alive rather than like 3 synced slides.
+              left = [
+                  ("document_5884360535620722530.mp4", 4.0, "glam"),
+                  ("document_5884360535620722525.mp4", 7.8, "platinum"),
+                  ("document_5884360535620722518.mp4", 18.0, "makeup"),
+                  ("document_5884360535620722527.mp4", 3.6, "hair"),
+                  ("document_5884360535620722522.mp4", 3.0, "nails"),
+                  ("document_5884360535620722529.mp4", 16.5, "red lip"),
+                  ("document_5884360535620722524.mp4", 15.5, "portrait"),
+                  ("document_5884360535620722531.mp4", 5.5, "bob"),
+                  ("document_5884360535620722533.mp4", 5.5, "fashion"),
+                  ("document_5884360535620722530.mp4", 2.0, "loop"),
+              ]
+              center = [
+                  ("document_5884360535620722528.mp4", 5.5, "blonde"),
+                  ("document_5884360535620722520.mp4", 11.0, "beauty detail"),
+                  ("document_5884360535620722532.mp4", 13.5, "glam"),
+                  ("document_5884360535620722519.mp4", 20.5, "rose"),
+                  ("document_5884360535620722526.mp4", 9.5, "portrait"),
+                  ("document_5884360535620722530.mp4", 4.5, "glam"),
+                  ("document_5884360535620722525.mp4", 8.5, "waves"),
+                  ("document_5884360535620722524.mp4", 16.5, "makeup"),
+                  ("document_5884360535620722528.mp4", 6.5, "blonde"),
+                  ("document_5884360535620722520.mp4", 9.0, "loop"),
+              ]
+              right = [
+                  ("document_5884360535620722522.mp4", 4.0, "nails"),
+                  ("document_5884360535620722531.mp4", 6.0, "bob"),
+                  ("document_5884360535620722529.mp4", 17.5, "red lip"),
+                  ("document_5884360535620722533.mp4", 6.0, "fashion"),
+                  ("document_5884360535620722518.mp4", 19.0, "makeup"),
+                  ("document_5884360535620722527.mp4", 4.0, "hair"),
+                  ("document_5884360535620722532.mp4", 14.0, "closeup"),
+                  ("document_5884360535620722519.mp4", 21.0, "rose"),
+                  ("document_5884360535620722526.mp4", 10.0, "beauty"),
+                  ("document_5884360535620722522.mp4", 2.0, "loop"),
+              ]
+              lp=make_desktop_panel("left",left)
+              cp=make_desktop_panel("center",center)
+              rp=make_desktop_panel("right",right)
+
+              # Stagger the panels slightly so replacements never feel synchronized.
               fc=(
-                  "[0:v]fps=30,split=2[bg][fg];"
-                  "[bg]scale=1920:1080:force_original_aspect_ratio=increase,"
-                  "crop=1920:1080,gblur=sigma=14,"
-                  "eq=brightness=-0.035:saturation=0.96:contrast=1.03[bg2];"
-                  "[fg]scale=-2:1080:flags=lanczos,"
-                  "eq=contrast=1.02:saturation=1.02:brightness=0.004,"
-                  "unsharp=5:5:0.22:5:5:0[fg2];"
-                  "[bg2][fg2]overlay=x=(W-w)/2:y=(H-h)/2,"
+                  "[0:v]setpts=PTS-STARTPTS[l];"
+                  "[1:v]trim=start=0.31,setpts=PTS-STARTPTS[c];"
+                  "[2:v]trim=start=0.63,setpts=PTS-STARTPTS[r];"
+                  "color=c=#130f12:s=1920x1080:r=30:d=21.9[base];"
+                  "[base][l]overlay=x=32:y=0[b1];"
+                  "[b1][c]overlay=x=656:y=0[b2];"
+                  "[b2][r]overlay=x=1280:y=0,"
                   "format=yuv420p[outv]"
               )
+              out="tmp/desktop-master.mp4"
               run(["ffmpeg","-y","-hide_banner","-loglevel","error",
-                   "-ss",f"{start:.3f}","-t",f"{SHOT:.3f}","-i",src,
-                   "-filter_complex",fc,"-map","[outv]","-an","-r","30",
-                   "-c:v","libx264","-preset","ultrafast","-crf","12",
-                   "-pix_fmt","yuv420p",out])
+                   "-i",lp,"-i",cp,"-i",rp,
+                   "-filter_complex",fc,"-map","[outv]","-an","-t","21.9","-r","30",
+                   "-c:v","libx264","-preset","veryfast","-crf","10","-pix_fmt","yuv420p",out])
               return out
 
           def make_master(files, out):
@@ -105,13 +179,11 @@ jobs:
                       "-pix_fmt","yuv420p",out]
               run(cmd)
 
-          desktop=[]
           mobile=[]
           for i,(src,start,label) in enumerate(shots):
-              desktop.append(make_desktop(i,src,start))
               mobile.append(make_mobile(i,src,start))
 
-          make_master(desktop,"tmp/desktop-master.mp4")
+          make_desktop_mosaic()
           make_master(mobile,"tmp/mobile-master.mp4")
 
           # Web delivery MP4s: constrained bitrate + H.264 High + Fast Start.
