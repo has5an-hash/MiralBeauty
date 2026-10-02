@@ -1,0 +1,185 @@
+name: Render Miral Lightweight FX V4
+
+on:
+  push:
+    branches: [hero-remix-build-20261002]
+    paths:
+      - ".github/workflows/hero-lightweight-v4.yml"
+  workflow_dispatch:
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg zip
+
+      - name: Render short high-impact versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tmp final-v4
+
+          cat > /tmp/v4.py <<'PY'
+          import subprocess, shlex, json
+          from pathlib import Path
+
+          S=[
+            "document_5884360535620722518.mp4","document_5884360535620722519.mp4",
+            "document_5884360535620722520.mp4","document_5884360535620722522.mp4",
+            "document_5884360535620722524.mp4","document_5884360535620722525.mp4",
+            "document_5884360535620722526.mp4","document_5884360535620722527.mp4",
+            "document_5884360535620722528.mp4","document_5884360535620722529.mp4",
+            "document_5884360535620722530.mp4","document_5884360535620722531.mp4",
+            "document_5884360535620722532.mp4","document_5884360535620722533.mp4",
+          ]
+          T={S[0]:18,S[1]:21,S[2]:11,S[3]:4,S[4]:16,S[5]:8,S[6]:10,S[7]:4,S[8]:6,S[9]:17,S[10]:4,S[11]:6,S[12]:14,S[13]:6}
+          ud=set(); um=set()
+
+          def run(cmd):
+              print("+"," ".join(shlex.quote(str(x)) for x in cmd),flush=True)
+              subprocess.run([str(x) for x in cmd],check=True)
+
+          def prep(src,w,h,dur,out,used,look="clean"):
+              used.add(src)
+              vf=(f"fps=30,scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,"
+                  f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=#100b0f,"
+                  "eq=contrast=1.04:saturation=1.045:brightness=0.004:gamma=1.01,"
+                  "unsharp=5:5:0.20:5:5:0")
+              if look=="soft": vf+=",vignette=PI/14"
+              if look=="film": vf+=",noise=alls=0.8:allf=t+u"
+              vf+=",format=yuv420p"
+              run(["ffmpeg","-y","-hide_banner","-loglevel","error","-ss",str(T[src]),"-t",str(dur),"-i",src,
+                   "-an","-vf",vf,"-r","30","-c:v","libx264","-preset","ultrafast","-crf","14","-pix_fmt","yuv420p",out])
+
+          def seq(name,items,w,h,used):
+              dur=1.76
+              xf=0.12
+              clips=[]
+              for i,src in enumerate(items):
+                  o=f"tmp/{name}_{i}.mp4"
+                  prep(src,w,h,dur,o,used,["clean","soft","film"][i%3])
+                  clips.append(o)
+              cmd=["ffmpeg","-y","-hide_banner","-loglevel","error"]
+              for c in clips: cmd+=["-i",c]
+              trs=["smoothleft","circleopen","hblur","zoomin"]
+              parts=[]; last="[0:v]"
+              for i in range(1,len(clips)):
+                  lab=f"[x{i}]"; off=i*(dur-xf)
+                  parts.append(f"{last}[{i}:v]xfade=transition={trs[(i-1)%len(trs)]}:duration={xf}:offset={off:.3f}{lab}")
+                  last=lab
+              out=f"tmp/{name}.mp4"
+              cmd+=["-filter_complex",";".join(parts),"-map",last,"-an","-r","30","-c:v","libx264",
+                    "-preset","ultrafast","-crf","14","-pix_fmt","yuv420p",out]
+              run(cmd); return out
+
+          # Desktop: 3 independently changing reels, with animated layout changes.
+          left=seq("left",[S[10],S[0],S[5],S[13],S[4]],608,1080,ud)
+          mid=seq("mid",[S[8],S[2],S[12],S[6],S[9]],608,1080,ud)
+          right=seq("right",[S[3],S[11],S[7],S[1],S[5]],608,1080,ud)
+
+          # All 14 guaranteed by adding a brief hidden preload source sequence check below.
+          # Desktop visual composition is always full-width and uses only uncropped portrait panels.
+          fc=(
+            "color=c=#100a0f:s=1920x1080:r=30:d=8.40[bg];"
+            "[0:v]setpts=PTS-STARTPTS[l];[1:v]setpts=PTS-STARTPTS[m];[2:v]setpts=PTS-STARTPTS[r];"
+            "[bg][l]overlay=x='32+10*sin(t*1.3)':y=0[b1];"
+            "[b1][m]overlay=x='656+18*sin(t*1.05+1)':y='8*sin(t*1.4)'[b2];"
+            "[b2][r]overlay=x='1280+10*sin(t*1.2+2)':y=0[comp];"
+            "color=c=#fff4f8@0.075:s=120x1500:r=30:d=8.40,format=rgba,rotate=-0.22:c=black@0[shine1];"
+            "[comp][shine1]overlay=x='-220+mod(540*t,2300)':y=-220[glow];"
+            "[glow]drawbox=x=640:y=0:w=2:h=1080:color=#f7d6e4@0.24:t=fill,"
+            "drawbox=x=1278:y=0:w=2:h=1080:color=#f7d6e4@0.24:t=fill[out]"
+          )
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i",left,"-i",mid,"-i",right,
+               "-filter_complex",fc,"-map","[out]","-an","-t","8.40","-r","30",
+               "-c:v","libx264","-preset","veryfast","-crf","10","-pix_fmt","yuv420p","tmp/desktop-master.mp4"])
+
+          # Mobile: 14 full-screen shots, faster/high-impact transitions.
+          MSHOT=0.70; MX=0.10
+          order=[S[10],S[5],S[8],S[2],S[3],S[11],S[0],S[7],S[4],S[12],S[9],S[13],S[1],S[6]]
+          clips=[]
+          for i,src in enumerate(order):
+              o=f"tmp/m{i:02d}.mp4"
+              prep(src,1080,1920,MSHOT,o,um,["clean","soft","film","clean"][i%4])
+              clips.append(o)
+          cmd=["ffmpeg","-y","-hide_banner","-loglevel","error"]
+          for c in clips: cmd+=["-i",c]
+          trs=["smoothleft","circleopen","hblur","smoothup","zoomin","radial","fadeblack",
+               "smoothright","hblur","circleopen","smoothup","dissolve","zoomin"]
+          parts=[]; last="[0:v]"
+          for i in range(1,len(clips)):
+              lab=f"[m{i}]"; off=i*(MSHOT-MX)
+              parts.append(f"{last}[{i}:v]xfade=transition={trs[i-1]}:duration={MX}:offset={off:.3f}{lab}")
+              last=lab
+          base="tmp/mobile-master-base.mp4"
+          cmd+=["-filter_complex",";".join(parts),"-map",last,"-an","-r","30","-c:v","libx264",
+                "-preset","veryfast","-crf","10","-pix_fmt","yuv420p",base]
+          run(cmd)
+
+          mdur=14*MSHOT-13*MX
+          fx=(
+            f"color=c=#fff4fa@0.065:s=120x2300:r=30:d={mdur:.3f},format=rgba,rotate=-0.16:c=black@0[shine];"
+            "[0:v][shine]overlay=x='-260+mod(420*t,1450)':y=-200:"
+            "enable='between(t,1.1,1.5)+between(t,3.3,3.7)+between(t,5.6,6.0)+between(t,7.2,7.6)',format=yuv420p[out]"
+          )
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i",base,
+               "-filter_complex",fx,"-map","[out]","-an","-r","30",
+               "-c:v","libx264","-preset","veryfast","-crf","10","-pix_fmt","yuv420p","tmp/mobile-master.mp4"])
+
+          assert len(ud)==14, (len(ud),set(S)-ud)
+          assert len(um)==14, (len(um),set(S)-um)
+
+          # Lightweight MP4 targets
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i","tmp/desktop-master.mp4",
+               "-an","-c:v","libx264","-preset","slow","-profile:v","high","-level:v","4.1",
+               "-b:v","1400k","-maxrate","1750k","-bufsize","3500k","-pix_fmt","yuv420p","-r","30",
+               "-movflags","+faststart","final-v4/miral-hero-desktop-light.mp4"])
+
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i","tmp/mobile-master.mp4",
+               "-an","-c:v","libx264","-preset","slow","-profile:v","high","-level:v","4.1",
+               "-b:v","1050k","-maxrate","1350k","-bufsize","2700k","-pix_fmt","yuv420p","-r","30",
+               "-movflags","+faststart","final-v4/miral-hero-mobile-light.mp4"])
+
+          # Smaller VP9 alternatives, intended to approach/sub-1MB.
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i","tmp/desktop-master.mp4",
+               "-an","-c:v","libvpx-vp9","-b:v","0","-crf","38","-deadline","good","-cpu-used","3",
+               "-row-mt","1","-pix_fmt","yuv420p","final-v4/miral-hero-desktop-light.webm"])
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i","tmp/mobile-master.mp4",
+               "-an","-c:v","libvpx-vp9","-b:v","0","-crf","39","-deadline","good","-cpu-used","3",
+               "-row-mt","1","-pix_fmt","yuv420p","final-v4/miral-hero-mobile-light.webm"])
+
+          for typ in ["desktop","mobile"]:
+              inp=f"final-v4/miral-hero-{typ}-light.mp4"
+              run(["ffmpeg","-y","-hide_banner","-loglevel","error","-ss","0.5","-i",inp,
+                   "-frames:v","1","-c:v","libwebp","-quality","80",f"final-v4/miral-hero-{typ}-light-poster.webp"])
+
+          Path("final-v4/source-usage.json").write_text(json.dumps({
+            "desktop_count":len(ud),"mobile_count":len(um),
+            "desktop_used":sorted(ud),"mobile_used":sorted(um)
+          },indent=2),encoding="utf-8")
+          PY
+
+          python3 /tmp/v4.py
+
+      - name: QC and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in final-v4/*.mp4 final-v4/*.webm; do
+            ffprobe -v error -show_entries format=filename,duration,size,bit_rate:stream=codec_name,width,height,r_frame_rate,pix_fmt -of json "$f"
+          done
+          du -h final-v4/*
+          zip -9 -r MiralBeauty-Lightweight-FX-V4.zip final-v4/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MiralBeauty-Lightweight-FX-V4
+          path: |
+            MiralBeauty-Lightweight-FX-V4.zip
+            final-v4/
+          retention-days: 14
