@@ -1,5 +1,6 @@
 name: Hero Remix Analysis
 
+# second push trigger
 on:
   push:
     branches: [hero-remix-build-20261002]
@@ -36,8 +37,6 @@ jobs:
             if [ -n "$audio" ]; then hasaudio=yes; else hasaudio=no; fi
             aspect="$width:$height"
             echo "$base,$width,$height,$aspect,$duration,$fps,$codec,$bitrate,$orientation,$hasaudio" >> hero-analysis/analysis.csv
-
-            # Representative contact sheet. Entire source remains untouched.
             ffmpeg -y -hide_banner -loglevel error -i "$f" \
               -vf "fps=1/2,scale=360:-2:flags=lanczos,tile=4x3:nb_frames=12:padding=6:margin=6" \
               -frames:v 1 "hero-analysis/contact-sheets/$base.jpg" || true
