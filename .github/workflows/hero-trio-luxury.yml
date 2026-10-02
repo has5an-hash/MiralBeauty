@@ -1,0 +1,87 @@
+name: Render Miral Trio Luxury Hero
+
+on:
+  push:
+    branches: [hero-remix-build-20261002]
+    paths:
+      - ".github/workflows/hero-trio-luxury.yml"
+  workflow_dispatch:
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg zip
+
+      - name: Render 3-panel luxury hero
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p final-trio tmp
+
+          # Curated moments from the three selected videos.
+          ffmpeg -y -hide_banner -loglevel error -ss 4.0 -t 4.8 -i document_5884360535620722530.mp4             -an -vf "fps=30,scale=608:1080:flags=lanczos,eq=contrast=1.035:saturation=1.035:brightness=0.004:gamma=1.01,unsharp=5:5:0.18:5:5:0,vignette=PI/16,format=yuv420p"             -c:v libx264 -preset ultrafast -crf 12 -pix_fmt yuv420p tmp/a.mp4
+
+          ffmpeg -y -hide_banner -loglevel error -ss 6.0 -t 4.8 -i document_5884360535620722531.mp4             -an -vf "fps=30,scale=608:1080:flags=lanczos,eq=contrast=1.035:saturation=1.035:brightness=0.004:gamma=1.01,unsharp=5:5:0.18:5:5:0,noise=alls=0.55:allf=t+u,format=yuv420p"             -c:v libx264 -preset ultrafast -crf 12 -pix_fmt yuv420p tmp/b.mp4
+
+          ffmpeg -y -hide_banner -loglevel error -ss 4.0 -t 4.8 -i document_5884360535620722527.mp4             -an -vf "fps=30,scale=608:1080:flags=lanczos,eq=contrast=1.035:saturation=1.035:brightness=0.004:gamma=1.01,unsharp=5:5:0.18:5:5:0,vignette=PI/18,format=yuv420p"             -c:v libx264 -preset ultrafast -crf 12 -pix_fmt yuv420p tmp/c.mp4
+
+          # 3-column luxury composition.
+          # Panels enter with staggered motion, then float subtly.
+          ffmpeg -y -hide_banner -loglevel error             -i tmp/a.mp4 -i tmp/b.mp4 -i tmp/c.mp4             -filter_complex "
+              color=c=#100b0f:s=1920x1080:r=30:d=4.8[bg];
+              [0:v]setpts=PTS-STARTPTS[a];
+              [1:v]setpts=PTS-STARTPTS[b];
+              [2:v]setpts=PTS-STARTPTS[c];
+
+              [bg][a]overlay=
+                x='if(lt(t,0.38),-608+(640/0.38)*t,32+5*sin(t*0.85))':
+                y='4*sin(t*0.65)'[b1];
+
+              [b1][b]overlay=
+                x='656+7*sin(t*0.72+1)':
+                y='if(lt(t,0.48),-1080+(1080/0.48)*t,0)'[b2];
+
+              [b2][c]overlay=
+                x='if(lt(t,0.42),1920-(640/0.42)*t,1280+5*sin(t*0.82+2))':
+                y='-4*sin(t*0.65)'[comp];
+
+              color=c=#fff4f8@0.060:s=125x1550:r=30:d=4.8,format=rgba,rotate=-0.22:c=black@0[shine];
+              [comp][shine]overlay=x='-260+620*t':y=-240[lit];
+
+              [lit]
+                drawbox=x=640:y=0:w=2:h=1080:color=#f4d4e1@0.26:t=fill,
+                drawbox=x=1278:y=0:w=2:h=1080:color=#f4d4e1@0.26:t=fill,
+                drawbox=x=0:y=0:w=1920:h=1080:color=#f2d1df@0.018:t=fill,
+                format=yuv420p[out]
+            "             -map "[out]" -an -t 4.8 -r 30             -c:v libx264 -preset medium -profile:v high -level:v 4.1             -b:v 4200k -maxrate 5200k -bufsize 10400k             -pix_fmt yuv420p -movflags +faststart             final-trio/miral-trio-luxury-1080p.mp4
+
+          ffmpeg -y -hide_banner -loglevel error -ss 0.8             -i final-trio/miral-trio-luxury-1080p.mp4             -frames:v 1 -c:v libwebp -quality 82             final-trio/miral-trio-luxury-poster.webp
+
+          ffmpeg -y -hide_banner -loglevel error             -i final-trio/miral-trio-luxury-1080p.mp4             -vf "fps=2,scale=480:-2:flags=lanczos,tile=3x3:nb_frames=9:padding=6:margin=6"             -frames:v 1 final-trio/review-trio.jpg
+
+          ffprobe -v error             -show_entries format=filename,duration,size,bit_rate:stream=codec_name,width,height,r_frame_rate,pix_fmt             -of json final-trio/miral-trio-luxury-1080p.mp4             > final-trio/ffprobe.json
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("final-trio/miral-trio-luxury-1080p.mp4")
+          b=p.read_bytes()
+          moov=b.find(b"moov"); mdat=b.find(b"mdat")
+          assert moov!=-1 and mdat!=-1 and moov<mdat
+          PY
+
+          zip -9 -r MiralBeauty-Trio-Luxury-1080p.zip final-trio/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MiralBeauty-Trio-Luxury-1080p
+          path: |
+            MiralBeauty-Trio-Luxury-1080p.zip
+            final-trio/
+          retention-days: 14
