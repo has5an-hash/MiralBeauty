@@ -1,0 +1,371 @@
+name: Render Miral Ultra Luxury Hero
+
+on:
+  push:
+    branches: [hero-remix-build-20261002]
+    paths:
+      - ".github/workflows/hero-ultra-luxury.yml"
+  workflow_dispatch:
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg zip
+
+      - name: Render ultra luxury desktop and mobile
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tmp ultra-hero
+
+          cat > /tmp/ultra.py <<'PY'
+          import subprocess, shlex, json
+          from pathlib import Path
+
+          FPS=30
+          SCENE=4.65
+          SHOT=2.405
+          PXF=0.16
+          SXF=0.28
+
+          ALL = [
+            "document_5884360535620722518.mp4",
+            "document_5884360535620722519.mp4",
+            "document_5884360535620722520.mp4",
+            "document_5884360535620722522.mp4",
+            "document_5884360535620722524.mp4",
+            "document_5884360535620722525.mp4",
+            "document_5884360535620722526.mp4",
+            "document_5884360535620722527.mp4",
+            "document_5884360535620722528.mp4",
+            "document_5884360535620722529.mp4",
+            "document_5884360535620722530.mp4",
+            "document_5884360535620722531.mp4",
+            "document_5884360535620722532.mp4",
+            "document_5884360535620722533.mp4",
+          ]
+
+          # Curated timestamps, chosen from prior contact-sheet review.
+          T = {
+            ALL[0]:18.0, ALL[1]:21.0, ALL[2]:11.0, ALL[3]:4.0,
+            ALL[4]:16.0, ALL[5]:8.0, ALL[6]:10.0, ALL[7]:4.0,
+            ALL[8]:6.0, ALL[9]:17.0, ALL[10]:4.0, ALL[11]:6.0,
+            ALL[12]:14.0, ALL[13]:6.0,
+          }
+
+          used_desktop=set()
+          used_mobile=set()
+
+          def run(cmd):
+            print("+", " ".join(shlex.quote(str(x)) for x in cmd), flush=True)
+            subprocess.run([str(x) for x in cmd], check=True)
+
+          def clip(src, start, w, h, out, mood="clean", used=None):
+            if used is not None:
+              used.add(src)
+            # Entire portrait source remains visible; never crop.
+            vf=(
+              f"fps={FPS},scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,"
+              f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=#120c11,"
+              "eq=contrast=1.035:saturation=1.045:brightness=0.004:gamma=1.01,"
+              "unsharp=5:5:0.18:5:5:0"
+            )
+            if mood=="silk":
+              vf += ",vignette=PI/14"
+            elif mood=="film":
+              vf += ",noise=alls=0.9:allf=t+u"
+            elif mood=="glow":
+              vf += ",gblur=sigma=0.18"
+            vf += ",format=yuv420p"
+            run(["ffmpeg","-y","-hide_banner","-loglevel","error",
+                 "-ss",f"{start:.3f}","-t",f"{SHOT:.3f}","-i",src,
+                 "-an","-vf",vf,"-r",str(FPS),"-c:v","libx264",
+                 "-preset","ultrafast","-crf","13","-pix_fmt","yuv420p",out])
+
+          def pair(prefix, pairdef, w, h, mood, used):
+            a,b = pairdef
+            p0=f"tmp/{prefix}_a.mp4"; p1=f"tmp/{prefix}_b.mp4"
+            clip(a,T[a],w,h,p0,mood,used)
+            clip(b,T[b],w,h,p1,mood,used)
+            out=f"tmp/{prefix}.mp4"
+            transitions=["smoothleft","dissolve","circleopen","fadefast","slideup"]
+            tr=transitions[sum(ord(c) for c in prefix)%len(transitions)]
+            run(["ffmpeg","-y","-hide_banner","-loglevel","error",
+                 "-i",p0,"-i",p1,
+                 "-filter_complex",
+                 f"[0:v][1:v]xfade=transition={tr}:duration={PXF}:offset={SHOT-PXF:.3f}[v]",
+                 "-map","[v]","-an","-t",str(SCENE),"-r",str(FPS),
+                 "-c:v","libx264","-preset","ultrafast","-crf","13","-pix_fmt","yuv420p",out])
+            return out
+
+          def scene_render(name, panel_files, fc):
+            out=f"tmp/{name}.mp4"
+            cmd=["ffmpeg","-y","-hide_banner","-loglevel","error"]
+            for p in panel_files:
+              cmd += ["-i",p]
+            cmd += ["-filter_complex",fc,"-map","[out]","-an","-t",str(SCENE),"-r",str(FPS),
+                    "-c:v","libx264","-preset","veryfast","-crf","11","-pix_fmt","yuv420p",out]
+            run(cmd)
+            return out
+
+          # ---------- DESKTOP ----------
+          # Every one of the 14 source files is used across these layouts.
+          d_pairs = [
+            [(ALL[10],ALL[5]),(ALL[8],ALL[2]),(ALL[3],ALL[11])],
+            [(ALL[0],ALL[7]),(ALL[4],ALL[12]),(ALL[9],ALL[13])],
+            [(ALL[1],ALL[6]),(ALL[5],ALL[10]),(ALL[8],ALL[3]),(ALL[11],ALL[4])],
+            [(ALL[13],ALL[0]),(ALL[2],ALL[9]),(ALL[12],ALL[7]),(ALL[1],ALL[6])],
+            [(ALL[5],ALL[8]),(ALL[4],ALL[10]),(ALL[9],ALL[1])],
+          ]
+
+          dsc=[]
+
+          # D1 — glossy editorial triptych + moving light sweep
+          ps=[pair(f"d0p{i}",d_pairs[0][i],608,1080,["clean","silk","film"][i],used_desktop) for i in range(3)]
+          fc=(
+            "color=c=#130d12:s=1920x1080:r=30:d=4.65[bg];"
+            "[bg][0:v]overlay=x=32:y=0[b1];[b1][1:v]overlay=x=656:y=0[b2];[b2][2:v]overlay=x=1280:y=0[comp];"
+            "color=c=white@0.045:s=220x1500:r=30:d=4.65,format=rgba,rotate=-0.23:c=black@0[shine];"
+            "[comp][shine]overlay=x='-450+620*t':y=-210,"
+            "drawbox=x=640:y=0:w=2:h=1080:color=#f4d9e7@0.26:t=fill,"
+            "drawbox=x=1278:y=0:w=2:h=1080:color=#f4d9e7@0.26:t=fill[out]"
+          )
+          dsc.append(scene_render("desktop_scene0",ps,fc))
+
+          # D2 — hero center + framed side cards, powder-rose accents
+          dims=[(500,888),(700,1080),(500,888)]
+          ps=[pair(f"d1p{i}",d_pairs[1][i],*dims[i],["silk","clean","glow"][i],used_desktop) for i in range(3)]
+          fc=(
+            "color=c=#0e0a0d:s=1920x1080:r=30:d=4.65[bg];"
+            "[bg][0:v]overlay=x=32:y=96[b1];[b1][1:v]overlay=x=610:y=0[b2];[b2][2:v]overlay=x=1388:y=96[comp];"
+            "[comp]drawbox=x=596:y=0:w=728:h=1080:color=#e9c3d5@0.13:t=6,"
+            "drawbox=x=20:y=84:w=524:h=912:color=#fff4fa@0.10:t=3,"
+            "drawbox=x=1376:y=84:w=524:h=912:color=#fff4fa@0.10:t=3[out]"
+          )
+          dsc.append(scene_render("desktop_scene1",ps,fc))
+
+          # D3 — four-card staggered fashion spread
+          ps=[pair(f"d2p{i}",d_pairs[2][i],430,764,["film","clean","silk","film"][i],used_desktop) for i in range(4)]
+          fc=(
+            "color=c=#171016:s=1920x1080:r=30:d=4.65[bg];"
+            "[bg][0:v]overlay=x=42:y=58[b1];[b1][1:v]overlay=x=500:y=228[b2];"
+            "[b2][2:v]overlay=x=958:y=58[b3];[b3][3:v]overlay=x=1416:y=228[comp];"
+            "[comp]drawbox=x=28:y=44:w=458:h=792:color=#f1cbdc@0.12:t=3,"
+            "drawbox=x=486:y=214:w=458:h=792:color=#f1cbdc@0.12:t=3,"
+            "drawbox=x=944:y=44:w=458:h=792:color=#f1cbdc@0.12:t=3,"
+            "drawbox=x=1402:y=214:w=458:h=792:color=#f1cbdc@0.12:t=3[out]"
+          )
+          dsc.append(scene_render("desktop_scene2",ps,fc))
+
+          # D4 — runway ribbon: four cards with alternating vertical rhythm + sheen
+          ps=[pair(f"d3p{i}",d_pairs[3][i],444,790,["clean","silk","film","clean"][i],used_desktop) for i in range(4)]
+          fc=(
+            "color=c=#0c090c:s=1920x1080:r=30:d=4.65[bg];"
+            "[bg][0:v]overlay=x=42:y=34[b1];[b1][1:v]overlay=x=508:y=250[b2];"
+            "[b2][2:v]overlay=x=974:y=34[b3];[b3][3:v]overlay=x=1440:y=250[comp];"
+            "color=c=#ffd8e8@0.035:s=260x1500:r=30:d=4.65,format=rgba,rotate=0.22:c=black@0[shine];"
+            "[comp][shine]overlay=x='1850-560*t':y=-220[out]"
+          )
+          dsc.append(scene_render("desktop_scene3",ps,fc))
+
+          # D5 — premium closing wall, center slightly dominant
+          dims=[(560,994),(650,1080),(560,994)]
+          ps=[pair(f"d4p{i}",d_pairs[4][i],*dims[i],["silk","clean","silk"][i],used_desktop) for i in range(3)]
+          fc=(
+            "color=c=#140e13:s=1920x1080:r=30:d=4.65[bg];"
+            "[bg][0:v]overlay=x=28:y=43[b1];[b1][1:v]overlay=x=635:y=0[b2];[b2][2:v]overlay=x=1332:y=43[comp];"
+            "[comp]drawbox=x=619:y=0:w=682:h=1080:color=#f6d7e5@0.12:t=5[out]"
+          )
+          dsc.append(scene_render("desktop_scene4",ps,fc))
+
+          # Desktop scene transitions: varied, premium, restrained.
+          cmd=["ffmpeg","-y","-hide_banner","-loglevel","error"]
+          for s in dsc: cmd += ["-i",s]
+          trs=["smoothleft","radial","hblur","smoothright"]
+          parts=[]; last="[0:v]"
+          for i in range(1,len(dsc)):
+            lab=f"[dx{i}]"; off=i*(SCENE-SXF)
+            parts.append(f"{last}[{i}:v]xfade=transition={trs[i-1]}:duration={SXF}:offset={off:.3f}{lab}")
+            last=lab
+          dmaster="tmp/desktop-ultra-master.mp4"
+          cmd += ["-filter_complex",";".join(parts),"-map",last,"-an","-r","30",
+                  "-c:v","libx264","-preset","veryfast","-crf","9","-pix_fmt","yuv420p",dmaster]
+          run(cmd)
+
+          # ---------- MOBILE ----------
+          # Same 14-source requirement, but entirely separate vertical composition.
+          m_pairs = [
+            [(ALL[10],ALL[5]),(ALL[8],ALL[2]),(ALL[3],ALL[11])],
+            [(ALL[0],ALL[7]),(ALL[4],ALL[12])],
+            [(ALL[9],ALL[13]),(ALL[1],ALL[6]),(ALL[5],ALL[10])],
+            [(ALL[8],ALL[3]),(ALL[11],ALL[4])],
+            [(ALL[2],ALL[9]),(ALL[12],ALL[7]),(ALL[1],ALL[6])],
+          ]
+          msc=[]
+
+          # M1 — full-screen hero base + two floating editorial cards
+          base=pair("m0base",m_pairs[0][0],1080,1920,"clean",used_mobile)
+          p1=pair("m0p1",m_pairs[0][1],430,764,"silk",used_mobile)
+          p2=pair("m0p2",m_pairs[0][2],430,764,"film",used_mobile)
+          fc=(
+            "[0:v]eq=brightness=-0.035:saturation=0.96[base];"
+            "[base][1:v]overlay=x=54:y=98[b1];[b1][2:v]overlay=x=596:y=1058[comp];"
+            "[comp]drawbox=x=42:y=86:w=454:h=788:color=#ffe2ee@0.18:t=4,"
+            "drawbox=x=584:y=1046:w=454:h=788:color=#ffe2ee@0.18:t=4[out]"
+          )
+          msc.append(scene_render("mobile_scene0",[base,p1,p2],fc))
+
+          # M2 — clean full-screen beauty cut with cinematic rose veil
+          base=pair("m1base",m_pairs[1][0],1080,1920,"clean",used_mobile)
+          inset=pair("m1inset",m_pairs[1][1],520,924,"silk",used_mobile)
+          fc=(
+            "[0:v]eq=contrast=1.02:saturation=1.01[base];"
+            "[base]drawbox=x=0:y=0:w=1080:h=1920:color=#2b0f20@0.06:t=fill[b0];"
+            "[b0][1:v]overlay=x=510:y=900[comp];"
+            "[comp]drawbox=x=498:y=888:w=544:h=948:color=#f8d5e4@0.17:t=4[out]"
+          )
+          msc.append(scene_render("mobile_scene1",[base,inset],fc))
+
+          # M3 — two offset tall cards over matte-black/powder canvas
+          p0=pair("m2p0",m_pairs[2][0],500,888,"film",used_mobile)
+          p1=pair("m2p1",m_pairs[2][1],500,888,"clean",used_mobile)
+          p2=pair("m2p2",m_pairs[2][2],500,888,"silk",used_mobile)
+          fc=(
+            "color=c=#120c11:s=1080x1920:r=30:d=4.65[bg];"
+            "[bg][0:v]overlay=x=40:y=90[b1];[b1][1:v]overlay=x=540:y=510[b2];"
+            "[b2][2:v]overlay=x=40:y=950[comp];"
+            "color=c=white@0.045:s=180x2200:r=30:d=4.65,format=rgba,rotate=-0.20:c=black@0[shine];"
+            "[comp][shine]overlay=x='-300+360*t':y=-180[out]"
+          )
+          msc.append(scene_render("mobile_scene2",[p0,p1,p2],fc))
+
+          # M4 — full-screen main + centered framed card
+          base=pair("m3base",m_pairs[3][0],1080,1920,"clean",used_mobile)
+          card=pair("m3card",m_pairs[3][1],620,1102,"film",used_mobile)
+          fc=(
+            "[0:v]eq=brightness=-0.045:saturation=0.94[base];"
+            "[base][1:v]overlay=x=230:y=390[comp];"
+            "[comp]drawbox=x=214:y=374:w=652:h=1134:color=#f7cfdf@0.20:t=5[out]"
+          )
+          msc.append(scene_render("mobile_scene3",[base,card],fc))
+
+          # M5 — finale: three vertical cards as luxury magazine cover wall
+          p0=pair("m4p0",m_pairs[4][0],330,586,"silk",used_mobile)
+          p1=pair("m4p1",m_pairs[4][1],330,586,"clean",used_mobile)
+          p2=pair("m4p2",m_pairs[4][2],330,586,"film",used_mobile)
+          fc=(
+            "color=c=#160e14:s=1080x1920:r=30:d=4.65[bg];"
+            "[bg][0:v]overlay=x=45:y=360[b1];[b1][1:v]overlay=x=375:y=700[b2];[b2][2:v]overlay=x=705:y=360[comp];"
+            "[comp]drawbox=x=30:y=345:w=360:h=616:color=#f4cedf@0.15:t=3,"
+            "drawbox=x=360:y=685:w=360:h=616:color=#f4cedf@0.15:t=3,"
+            "drawbox=x=690:y=345:w=360:h=616:color=#f4cedf@0.15:t=3[out]"
+          )
+          msc.append(scene_render("mobile_scene4",[p0,p1,p2],fc))
+
+          cmd=["ffmpeg","-y","-hide_banner","-loglevel","error"]
+          for s in msc: cmd += ["-i",s]
+          trs=["slideup","fadeblack","circleopen","smoothleft"]
+          parts=[]; last="[0:v]"
+          for i in range(1,len(msc)):
+            lab=f"[mx{i}]"; off=i*(SCENE-SXF)
+            parts.append(f"{last}[{i}:v]xfade=transition={trs[i-1]}:duration={SXF}:offset={off:.3f}{lab}")
+            last=lab
+          mmaster="tmp/mobile-ultra-master.mp4"
+          cmd += ["-filter_complex",";".join(parts),"-map",last,"-an","-r","30",
+                  "-c:v","libx264","-preset","veryfast","-crf","9","-pix_fmt","yuv420p",mmaster]
+          run(cmd)
+
+          # Enforce 14/14 in BOTH versions before delivery.
+          assert set(ALL) <= used_desktop, f"Desktop missing: {set(ALL)-used_desktop}"
+          assert set(ALL) <= used_mobile, f"Mobile missing: {set(ALL)-used_mobile}"
+
+          # Web delivery files.
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i",dmaster,
+               "-an","-c:v","libx264","-preset","medium","-profile:v","high","-level:v","4.1",
+               "-b:v","3800k","-maxrate","4800k","-bufsize","9600k",
+               "-pix_fmt","yuv420p","-r","30","-movflags","+faststart",
+               "ultra-hero/miral-hero-desktop-ultra-luxury.mp4"])
+
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-i",mmaster,
+               "-an","-c:v","libx264","-preset","medium","-profile:v","high","-level:v","4.1",
+               "-b:v","2700k","-maxrate","3400k","-bufsize","6800k",
+               "-pix_fmt","yuv420p","-r","30","-movflags","+faststart",
+               "ultra-hero/miral-hero-mobile-ultra-luxury.mp4"])
+
+          # Posters.
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-ss","0.75",
+               "-i","ultra-hero/miral-hero-desktop-ultra-luxury.mp4","-frames:v","1",
+               "-c:v","libwebp","-quality","82","ultra-hero/miral-hero-desktop-ultra-poster.webp"])
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error","-ss","0.75",
+               "-i","ultra-hero/miral-hero-mobile-ultra-luxury.mp4","-frames:v","1",
+               "-c:v","libwebp","-quality","82","ultra-hero/miral-hero-mobile-ultra-poster.webp"])
+
+          # Review contact sheets.
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error",
+               "-i","ultra-hero/miral-hero-desktop-ultra-luxury.mp4",
+               "-vf","fps=1/1.75,scale=480:-2:flags=lanczos,tile=4x3:nb_frames=12:padding=6:margin=6",
+               "-frames:v","1","ultra-hero/review-desktop-ultra.jpg"])
+          run(["ffmpeg","-y","-hide_banner","-loglevel","error",
+               "-i","ultra-hero/miral-hero-mobile-ultra-luxury.mp4",
+               "-vf","fps=1/1.75,scale=240:-2:flags=lanczos,tile=4x3:nb_frames=12:padding=6:margin=6",
+               "-frames:v","1","ultra-hero/review-mobile-ultra.jpg"])
+
+          manifest={
+            "desktop_used":sorted(used_desktop),
+            "mobile_used":sorted(used_mobile),
+            "desktop_count":len(used_desktop),
+            "mobile_count":len(used_mobile),
+            "source_count":len(ALL),
+            "desktop_layouts":5,
+            "mobile_layouts":5,
+          }
+          Path("ultra-hero/source-usage.json").write_text(json.dumps(manifest,indent=2),encoding="utf-8")
+          PY
+
+          python3 /tmp/ultra.py
+
+      - name: QC
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for f in ultra-hero/miral-hero-desktop-ultra-luxury.mp4 ultra-hero/miral-hero-mobile-ultra-luxury.mp4; do
+            ffprobe -v error -show_entries format=filename,duration,size,bit_rate:stream=codec_name,width,height,r_frame_rate,pix_fmt -of json "$f"
+            test -z "$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$f")"
+            python3 - "$f" <<'PY'
+          import sys
+          from pathlib import Path
+          p=Path(sys.argv[1]); b=p.read_bytes()
+          moov=b.find(b"moov"); mdat=b.find(b"mdat")
+          assert moov!=-1 and mdat!=-1 and moov<mdat, f"Fast Start failed: {p}"
+          PY
+          done
+
+          test "$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 ultra-hero/miral-hero-desktop-ultra-luxury.mp4)" = "1920x1080"
+          test "$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 ultra-hero/miral-hero-mobile-ultra-luxury.mp4)" = "1080x1920"
+
+          python3 - <<'PY'
+          import json
+          x=json.load(open("ultra-hero/source-usage.json"))
+          assert x["desktop_count"]==14
+          assert x["mobile_count"]==14
+          print("14/14 source usage confirmed for Desktop and Mobile")
+          PY
+
+          zip -9 -r MiralBeauty-Ultra-Luxury-Hero.zip ultra-hero/
+
+      - name: Upload final package
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiralBeauty-Ultra-Luxury-Hero
+          path: |
+            MiralBeauty-Ultra-Luxury-Hero.zip
+            ultra-hero/
+          retention-days: 14
