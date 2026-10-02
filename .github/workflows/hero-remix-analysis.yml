@@ -1,0 +1,51 @@
+name: Hero Remix Analysis
+
+on:
+  push:
+    branches: [hero-remix-build-20261002]
+    paths:
+      - ".github/workflows/hero-remix-analysis.yml"
+      - "*.mp4"
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tools
+        run: |
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+      - name: Analyze all source videos
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p hero-analysis/contact-sheets
+          echo 'file,width,height,aspect,duration,fps,codec,bitrate,orientation,audio' > hero-analysis/analysis.csv
+          for f in ./*.mp4; do
+            base="$(basename "$f")"
+            width=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$f")
+            height=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$f")
+            duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f")
+            fps=$(ffprobe -v error -select_streams v:0 -show_entries stream=avg_frame_rate -of csv=p=0 "$f")
+            codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "$f")
+            bitrate=$(ffprobe -v error -show_entries format=bit_rate -of csv=p=0 "$f")
+            audio=$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$f" | head -1 || true)
+            if [ "$height" -gt "$width" ]; then orientation=portrait; elif [ "$height" -lt "$width" ]; then orientation=landscape; else orientation=square; fi
+            if [ -n "$audio" ]; then hasaudio=yes; else hasaudio=no; fi
+            aspect="$width:$height"
+            echo "$base,$width,$height,$aspect,$duration,$fps,$codec,$bitrate,$orientation,$hasaudio" >> hero-analysis/analysis.csv
+
+            # Representative contact sheet. Entire source remains untouched.
+            ffmpeg -y -hide_banner -loglevel error -i "$f" \
+              -vf "fps=1/2,scale=360:-2:flags=lanczos,tile=4x3:nb_frames=12:padding=6:margin=6" \
+              -frames:v 1 "hero-analysis/contact-sheets/$base.jpg" || true
+          done
+          column -s, -t hero-analysis/analysis.csv
+      - name: Upload analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: hero-remix-analysis
+          path: hero-analysis/
+          retention-days: 7
