@@ -15,13 +15,15 @@ concurrency:
 
 jobs:
   import-zip:
-    name: Download and commit MirallBeauty.zip
+    name: Download and save MirallBeauty.zip with Git LFS
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          lfs: false
 
       - name: Download and validate ZIP
         shell: bash
@@ -32,24 +34,25 @@ jobs:
           TEMP_FILE="${RUNNER_TEMP}/MirallBeauty.zip"
 
           curl --fail --location --show-error --silent \
-            --retry 5 --retry-delay 5 --retry-all-errors \
-            --connect-timeout 30 --max-time 1500 \
-            --max-filesize 104857600 \
+            --retry 3 --retry-delay 3 --retry-all-errors \
+            --connect-timeout 30 --max-time 1800 \
+            --max-filesize 2147483648 \
             --output "$TEMP_FILE" "$URL"
 
           test -s "$TEMP_FILE"
           unzip -tq "$TEMP_FILE" > /dev/null
 
           SIZE=$(stat -c%s "$TEMP_FILE")
-          if (( SIZE >= 100 * 1024 * 1024 )); then
-            echo "::error::ZIP is too large for GitHub Git (> or = 100 MiB)."
+          if (( SIZE > 2 * 1024 * 1024 * 1024 )); then
+            echo "::error::ZIP exceeds the 2 GiB Git LFS limit for GitHub Free."
             exit 1
           fi
 
           mv -f "$TEMP_FILE" MirallBeauty.zip
-          echo "Downloaded a valid ZIP ($SIZE bytes)."
+          echo "ZIP verified: $SIZE bytes."
+          sha256sum MirallBeauty.zip
 
-      - name: Commit ZIP if it changed
+      - name: Commit ZIP using Git LFS if changed
         shell: bash
         run: |
           set -euo pipefail
@@ -57,12 +60,15 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add -f -- MirallBeauty.zip
+          git lfs install --local
+          git lfs track "MirallBeauty.zip"
+          git add -f -- .gitattributes MirallBeauty.zip
+          git lfs ls-files
 
           if git diff --cached --quiet; then
             echo "MirallBeauty.zip is already up to date."
             exit 0
           fi
 
-          git commit -m "Update MirallBeauty.zip from developersia.ir"
+          git commit -m "Import MirallBeauty.zip from Developersia (Git LFS)"
           git push origin "HEAD:${{ github.event.repository.default_branch }}"
