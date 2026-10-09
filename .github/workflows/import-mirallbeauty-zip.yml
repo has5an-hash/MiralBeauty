@@ -1,0 +1,65 @@
+name: Import MirallBeauty ZIP
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mirallbeauty-zip-import
+  cancel-in-progress: false
+
+jobs:
+  import-zip:
+    name: Download and commit MirallBeauty.zip
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download and validate ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          URL="https://developersia.ir/MirallBeauty.zip"
+          TEMP_FILE="${RUNNER_TEMP}/MirallBeauty.zip"
+
+          curl --fail --location --show-error --silent \
+            --retry 5 --retry-delay 5 --retry-all-errors \
+            --connect-timeout 30 --max-time 1500 \
+            --max-filesize 104857600 \
+            --output "$TEMP_FILE" "$URL"
+
+          test -s "$TEMP_FILE"
+          unzip -tq "$TEMP_FILE" > /dev/null
+
+          SIZE=$(stat -c%s "$TEMP_FILE")
+          if (( SIZE >= 100 * 1024 * 1024 )); then
+            echo "::error::ZIP is too large for GitHub Git (> or = 100 MiB)."
+            exit 1
+          fi
+
+          mv -f "$TEMP_FILE" MirallBeauty.zip
+          echo "Downloaded a valid ZIP ($SIZE bytes)."
+
+      - name: Commit ZIP if it changed
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -f -- MirallBeauty.zip
+
+          if git diff --cached --quiet; then
+            echo "MirallBeauty.zip is already up to date."
+            exit 0
+          fi
+
+          git commit -m "Update MirallBeauty.zip from developersia.ir"
+          git push origin "HEAD:${{ github.event.repository.default_branch }}"
