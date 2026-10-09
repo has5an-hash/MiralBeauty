@@ -2,6 +2,9 @@ name: Import MirallBeauty ZIP
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/import-mirallbeauty-zip.yml
 
 permissions:
   contents: write
